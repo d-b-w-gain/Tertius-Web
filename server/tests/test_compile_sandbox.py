@@ -13,12 +13,16 @@ def _srgb_to_gltf_linear_float32(component):
 
 
 def test_compile_sandbox_defaults_glb_to_normal_preview_quality():
-    glb_defaults = SANDBOX_SCRIPT.split(
-        'elif export_format in ("gltf", "glb")', maxsplit=1
-    )[1].split('if quality_arg == "sketch"', maxsplit=1)[0]
+    from tertius.component_cache import gltf_tessellation
 
-    assert "deflection = 10.0" in glb_defaults
-    assert "angular_deflection = 0.3" in glb_defaults
+    glb_export = SANDBOX_SCRIPT.split(
+        'elif export_format in ("gltf", "glb")', maxsplit=1
+    )[1].split("bd.export_gltf(", maxsplit=1)[0]
+
+    # The sandbox takes its deflections from the same table cached
+    # components are meshed with; no quality means "normal".
+    assert "gltf_tessellation(quality_arg)" in glb_export
+    assert gltf_tessellation(None) == gltf_tessellation("normal") == (10.0, 0.3)
 
 
 def test_compile_sandbox_rejects_unsupported_export_format_before_spawn(tmp_path):
@@ -43,11 +47,12 @@ def test_compile_sandbox_allows_timus_views_export(tmp_path, monkeypatch):
 
     class FakeProcess:
         returncode = 0
+        stdout = stderr = None
 
-        def communicate(self, timeout):
+        def poll(self):
             spawned["command"] = True
             (tmp_path / "output.timus_views").write_text("{}", encoding="utf-8")
-            return "", ""
+            return 0
 
     monkeypatch.setattr(
         "core.compile_sandbox.subprocess.Popen", lambda *args, **kwargs: FakeProcess()

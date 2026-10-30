@@ -264,3 +264,68 @@ def deduplicate_glb_file(path: str | Path) -> dict[str, int]:
     if optimized is not original:
         glb_path.write_bytes(optimized)
     return stats
+
+
+def annotate_mesh_digests(data: bytes) -> bytes:
+    """Add extras.tertiusMeshDigest to each mesh: a digest of its primitives'
+    accessor contents and modes. Equal geometry gets the same digest in any
+    GLB, so a viewer assembling a scene from per-component GLBs (#314) can
+    instance it across them, as it does within one deduplicated GLB."""
+    parsed = _parse_glb(data)
+    if parsed is None:
+        return data
+    gltf, binary = parsed
+    accessors = gltf.get("accessors")
+    meshes = gltf.get("meshes")
+    if not isinstance(accessors, list) or not isinstance(meshes, list):
+        return data
+    accessor_digests: dict[int, str | None] = {}
+
+    def accessor_digest(index: Any) -> str | None:
+        if not isinstance(index, int) or not (0 <= index < len(accessors)):
+            return None
+        if index not in accessor_digests:
+            payload = _accessor_payload(gltf, binary, accessors[index])
+            accessor_digests[index] = (
+                None
+                if payload is None
+                else hashlib.sha256(
+                    payload[0] + json.dumps(payload[1], sort_keys=True).encode("utf-8")
+                ).hexdigest()
+            )
+        return accessor_digests[index]
+
+    changed = False
+    for mesh in meshes:
+        if not isinstance(mesh, dict):
+            continue
+        primitives: list[list[Any]] | None = []
+        for primitive in mesh.get("primitives") or []:
+            attributes = {
+                name: accessor_digest(index) for name, index in sorted((primitive.get("attributes") or {}).items())
+            }
+            indices = accessor_digest(primitive.get("indices")) if "indices" in primitive else ""
+            if None in attributes.values() or indices is None or primitives is None:
+                primitives = None
+                break
+            primitives.append([primitive.get("mode", 4), attributes, indices])
+        if not primitives:
+            continue
+        digest = hashlib.sha256(json.dumps(primitives, separators=(",", ":")).encode("utf-8")).hexdigest()[:32]
+        mesh.setdefault("extras", {})["tertiusMeshDigest"] = digest
+        changed = True
+    if not changed:
+        return data
+    json_bytes = json.dumps(gltf, separators=(",", ":")).encode("utf-8")
+    json_bytes += b" " * ((4 - len(json_bytes) % 4) % 4)
+    binary_bytes = binary + b"\x00" * ((4 - len(binary) % 4) % 4)
+    length = 12 + 8 + len(json_bytes) + 8 + len(binary_bytes)
+    return b"".join(
+        (
+            struct.pack("<4sII", b"glTF", 2, length),
+            struct.pack("<I4s", len(json_bytes), b"JSON"),
+            json_bytes,
+            struct.pack("<I4s", len(binary_bytes), b"BIN\x00"),
+            binary_bytes,
+        )
+    )

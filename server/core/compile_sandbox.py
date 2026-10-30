@@ -4,10 +4,15 @@ import os
 import signal
 import subprocess
 import sys
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from time import monotonic, sleep
+from typing import Any
 
-from . import glb_dedup
+from . import glb_dedup, glb_export
+from . import scene_export as scene_export_module
 from .model_geometry_runtime import TERTIUS_MODEL_GEOMETRY_HELPER_SOURCE
 from .provenance_runtime import TERTIUS_PROVENANCE_HELPER_SOURCE
 
@@ -20,6 +25,13 @@ WORKBENCH_ARTIFACT_FILENAMES = {
     "drawing": "tertius-drawing.json",
     "bounds": "tertius-bounds.json",
 }
+COMPONENT_REPORT_FILENAME = "tertius-components.json"
+PHASES_FILENAME = "tertius-compile-phases.json"
+# Written once every output is in place; the sandbox then writes the
+# compile's new component cache entries before it exits.
+RESULT_READY_FILENAME = "tertius-result-ready"
+CACHE_FLUSH_FILENAME = "tertius-cache-flush.json"
+COMPONENT_CACHE_DIR_ENV = "TERTIUS_COMPONENT_CACHE_DIR"
 
 
 SANDBOX_SCRIPT = r"""
@@ -28,6 +40,17 @@ import sys
 import json
 import traceback
 from pathlib import Path
+from time import perf_counter
+
+phase_started = perf_counter()
+phases = {}
+
+
+def end_phase(name):
+    global phase_started
+    now = perf_counter()
+    phases[name] = round(now - phase_started, 4)
+    phase_started = now
 
 import build123d as bd
 project_dir = Path.cwd()
@@ -44,21 +67,39 @@ from tertius_provenance import source_call_ids as tertius_source_call_ids
 from tertius_provenance import source_map as tertius_source_map
 from tertius_provenance import uninstall as uninstall_tertius_provenance
 from tertius_model_geometry import model_geometry_metadata, visual_metadata_tree
+from tertius_glb_export import export_patched_gltf
 from tertius.runner import execute_design, write_design_bundle
+from tertius.component_cache import (
+    component_names_by_part_number,
+    configure_component_cache,
+    flush_component_cache,
+    gltf_tessellation,
+    write_component_report,
+)
+end_phase("startup")
 
 try:
     design_file = project_dir / "design.py"
     if not design_file.exists():
         raise RuntimeError("design.py not found in project. Cannot compile.")
 
+    component_cache_enabled = configure_component_cache(
+        os.environ.get("TERTIUS_COMPONENT_CACHE_DIR"),
+        project_dir,
+        export_format,
+        quality_arg,
+    )
     install_tertius_provenance(project_dir)
     try:
         execution = execute_design(project_dir)
     finally:
         uninstall_tertius_provenance()
+    end_phase("design")
 
     write_design_bundle(project_dir, execution)
+    write_component_report(project_dir, component_cache_enabled)
     compound = execution.model
+    part_component_names = component_names_by_part_number(compound)
     visual_tree = visual_metadata_tree(
         compound,
         bd=bd,
@@ -67,6 +108,7 @@ try:
     )
     model_geometry = model_geometry_metadata(visual_tree)
     visual_source_map = tertius_source_map()
+    end_phase("metadata")
     if export_format == "timus_bounds":
         bbox = compound.bounding_box()
         max_dim = max(bbox.max.X - bbox.min.X, bbox.max.Y - bbox.min.Y, bbox.max.Z - bbox.min.Z)
@@ -78,316 +120,45 @@ try:
     elif export_format == "step":
         bd.export_step(compound, str(output_path))
     elif export_format in ("gltf", "glb") and hasattr(bd, "export_gltf"):
-        # The UI omits quality for its ordinary GLB preview.  Treat that as the
+        # The UI omits quality for its ordinary GLB preview, which uses the
         # established "normal" preview quality rather than an ultra-fine mesh.
-        # Explicit quality values below continue to take precedence.
-        deflection = 10.0
-        angular_deflection = 0.3
-        if quality_arg == "sketch":
-            deflection = 200.0
-            angular_deflection = 0.8
-        elif quality_arg == "rough":
-            deflection = 100.0
-            angular_deflection = 0.6
-        elif quality_arg == "low":
-            deflection = 50.0
-            angular_deflection = 0.45
-        elif quality_arg == "medium":
-            deflection = 30.0
-            angular_deflection = 0.35
-        elif quality_arg == "normal":
-            deflection = 10.0
-            angular_deflection = 0.3
-        elif quality_arg == "high":
-            deflection = 1.0
-
-        bd.export_gltf(
+        # Cached components were meshed with these same values before they
+        # were stored, so the exporter skips re-meshing them.
+        deflection, angular_deflection = gltf_tessellation(quality_arg)
+        export_patched_gltf(
             compound,
-            str(output_path),
-            binary=(export_format == "glb"),
-            linear_deflection=deflection,
-            angular_deflection=angular_deflection
+            output_path,
+            export_format,
+            bd=bd,
+            deflection=deflection,
+            angular_deflection=angular_deflection,
+            visual_tree=visual_tree,
+            model_geometry=model_geometry,
+            visual_source_map=visual_source_map,
+            part_component_names=part_component_names,
+            end_phase=end_phase,
         )
+        if export_format == "glb" and os.environ.get("TERTIUS_SCENE_EXPORT") == "1":
+            # #314: per-component assets and a manifest, beside the
+            # monolithic GLB until the viewer loads manifests.
+            from tertius_scene_export import export_scene
 
-        if export_format in ("gltf", "glb"):
-            try:
-                from build123d.exporters3d import _create_xde
-                from OCP.XCAFDoc import XCAFDoc_DocumentTool
-                from OCP.TCollection import TCollection_AsciiString, TCollection_ExtendedString
-                from OCP.TDF import TDF_Tool
-                from OCP.TDataStd import TDataStd_Name
-                import json
-                import struct
-
-                # 1. Map tags to labels
-                original_location = compound.location
-                compound.location *= bd.Location((0, 0, 0), (1, 0, 0), -90)
-                doc = _create_xde(compound, getattr(bd, "Unit").MM)
-                shape_tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
-                tag_to_name = {}
-                tag_to_color = {}
-
-                def srgb_to_linear_float32(component):
-                    if component <= 0.04045:
-                        linear = component / 12.92
-                    else:
-                        linear = ((component + 0.055) / 1.055) ** 2.4
-                    return struct.unpack("<f", struct.pack("<f", linear))[0]
-
-                def color_factor(color):
-                    rgba = None
-                    try:
-                        if isinstance(color, bd.Color):
-                            rgba = list(color)
-                            rgba[:3] = [srgb_to_linear_float32(float(component)) for component in rgba[:3]]
-                        elif hasattr(color, "to_tuple"):
-                            rgba = list(color.to_tuple())
-                        elif all(hasattr(color, attr) for attr in ("r", "g", "b")):
-                            rgba = [color.r, color.g, color.b, getattr(color, "a", 1.0)]
-                        elif all(hasattr(color, attr) for attr in ("red", "green", "blue")):
-                            rgba = [color.red, color.green, color.blue, getattr(color, "alpha", 1.0)]
-                    except Exception:
-                        rgba = None
-                    if not isinstance(rgba, list):
-                        return None
-                    if len(rgba) == 3:
-                        rgba.append(1.0)
-                    try:
-                        return [float(component) for component in rgba[:4]]
-                    except Exception:
-                        return None
-
-                for node in bd.PreOrderIter(compound):
-                    if node.label or node.color is not None:
-                        inst_label = shape_tool.FindShape(node.wrapped, findInstance=True)
-                        if inst_label.IsNull():
-                            inst_label = shape_tool.FindShape(node.wrapped, findInstance=False)
-
-                        if not inst_label.IsNull():
-                            entry = TCollection_AsciiString()
-                            TDF_Tool.Entry_s(inst_label, entry)
-                            tag = f"=>[{entry.ToCString()}]"
-                            if node.label:
-                                tag_to_name[tag] = node.label
-                            if node.color is not None:
-                                factor = color_factor(node.color)
-                                if factor is not None:
-                                    tag_to_color[tag] = factor
-                            TDataStd_Name.Set_s(inst_label, TCollection_ExtendedString(tag))
-
-                compound.location = original_location
-
-                # 2. Patch the exported scene metadata. Depending on the
-                # exporter/backend, nodes may carry either XDE tags or labels.
-                def is_generated_export_name(name):
-                    if not isinstance(name, str) or not name.strip():
-                        return True
-                    stripped = name.strip()
-                    lowered = stripped.lower()
-                    return (
-                        stripped.startswith("=>[")
-                        or lowered in {"mesh", "node", "solid", "compound", "part", "object3d"}
-                        or lowered.startswith(("node_", "mesh_"))
-                    )
-
-                def patch_gltf_json(gltf_json, name_mapping, color_mapping, visual_metadata):
-                    changed = False
-                    extras = gltf_json.setdefault("extras", {})
-                    if model_geometry is not None:
-                        extras["tertiusModelGeometry"] = model_geometry
-                        changed = True
-                    if visual_source_map.get("source_calls"):
-                        extras["tertiusSourceMap"] = visual_source_map
-                        changed = True
-
-                    def mark_authored_material(material):
-                        material_changed = False
-                        extras = material.setdefault("extras", {})
-                        if extras.get("tertiusAuthoredColor") is not True:
-                            extras["tertiusAuthoredColor"] = True
-                            material_changed = True
-
-                        base_color = material.get("pbrMetallicRoughness", {}).get("baseColorFactor")
-                        if (
-                            isinstance(base_color, list)
-                            and len(base_color) >= 4
-                            and isinstance(base_color[3], (int, float))
-                            and float(base_color[3]) < 1.0
-                            and material.get("alphaMode") != "BLEND"
-                        ):
-                            material["alphaMode"] = "BLEND"
-                            material_changed = True
-
-                        return material_changed
-
-                    for material in gltf_json.get("materials", []):
-                        pbr = material.get("pbrMetallicRoughness")
-                        if isinstance(pbr, dict) and "baseColorFactor" in pbr:
-                            changed = mark_authored_material(material) or changed
-
-                    for node in gltf_json.get("nodes", []):
-                        node_tag = node.get("name")
-                        if node_tag in color_mapping and "mesh" in node:
-                            mesh_index = node["mesh"]
-                            meshes = gltf_json.get("meshes", [])
-                            if isinstance(mesh_index, int) and 0 <= mesh_index < len(meshes):
-                                for primitive in meshes[mesh_index].get("primitives", []):
-                                    material_index = primitive.get("material")
-                                    materials = gltf_json.get("materials", [])
-                                    if isinstance(material_index, int) and 0 <= material_index < len(materials):
-                                        material = materials[material_index]
-                                        pbr = material.setdefault("pbrMetallicRoughness", {})
-                                        pbr["baseColorFactor"] = color_mapping[node_tag]
-                                        changed = mark_authored_material(material) or changed
-                        if node_tag in name_mapping:
-                            node["name"] = name_mapping[node_tag]
-                            changed = True
-
-                    nodes = gltf_json.get("nodes", [])
-
-                    def apply_visual_metadata(node_index, visual_node):
-                        nonlocal changed
-                        if not isinstance(node_index, int) or not isinstance(visual_node, dict):
-                            return
-                        if not (0 <= node_index < len(nodes)):
-                            return
-                        node = nodes[node_index]
-                        if not isinstance(node, dict):
-                            return
-
-                        label = str(visual_node.get("label") or "")
-                        source_call_ids = [
-                            str(item)
-                            for item in (visual_node.get("source_call_ids") or [])
-                            if item
-                        ]
-                        component_id = visual_node.get("component_id")
-                        product_key = visual_node.get("product_key")
-                        product_digest = visual_node.get("product_definition_digest")
-                        connection_id = visual_node.get("connection_id")
-                        connection_digest = visual_node.get("connection_definition_digest")
-                        if label and is_generated_export_name(node.get("name")):
-                            node["name"] = label
-                            changed = True
-                        if source_call_ids:
-                            extras = node.setdefault("extras", {})
-                            extras["tertiusSourceCallIds"] = source_call_ids
-                            changed = True
-                        if component_id:
-                            extras = node.setdefault("extras", {})
-                            extras["tertiusComponent"] = {
-                                "id": str(component_id),
-                                "productKey": str(product_key or ""),
-                                "productDefinitionDigest": str(product_digest or ""),
-                            }
-                            changed = True
-                        if connection_id:
-                            extras = node.setdefault("extras", {})
-                            extras["tertiusConnection"] = {
-                                "id": str(connection_id),
-                                "connectionDefinitionDigest": str(connection_digest or ""),
-                            }
-                            changed = True
-
-                        gltf_children = [
-                            child_index
-                            for child_index in (node.get("children") or [])
-                            if isinstance(child_index, int)
-                        ]
-                        visual_children = [
-                            child
-                            for child in (visual_node.get("children") or [])
-                            if isinstance(child, dict)
-                        ]
-                        for child_index, child_visual_node in zip(gltf_children, visual_children):
-                            apply_visual_metadata(child_index, child_visual_node)
-
-                    scene_roots = []
-                    scene_id = gltf_json.get("scene")
-                    scenes = gltf_json.get("scenes")
-                    if isinstance(scene_id, int) and isinstance(scenes, list) and 0 <= scene_id < len(scenes):
-                        scene = scenes[scene_id]
-                        if isinstance(scene, dict) and isinstance(scene.get("nodes"), list):
-                            scene_roots = [index for index in scene["nodes"] if isinstance(index, int)]
-                    if not scene_roots:
-                        referenced = {
-                            child_index
-                            for node in nodes
-                            if isinstance(node, dict)
-                            for child_index in (node.get("children") or [])
-                            if isinstance(child_index, int)
-                        }
-                        scene_roots = [index for index in range(len(nodes)) if index not in referenced]
-
-                    if len(scene_roots) == 1:
-                        apply_visual_metadata(scene_roots[0], visual_metadata)
-                    else:
-                        visual_children = [
-                            child
-                            for child in (visual_metadata.get("children") or [])
-                            if isinstance(child, dict)
-                        ] if isinstance(visual_metadata, dict) else []
-                        for root_index, child_visual_node in zip(scene_roots, visual_children):
-                            apply_visual_metadata(root_index, child_visual_node)
-
-                    return changed
-
-                def patch_glb_metadata(glb_path, name_mapping, color_mapping):
-                    with open(glb_path, "rb") as f:
-                        data = f.read()
-
-                    magic, version, length = struct.unpack("<4sII", data[:12])
-                    if magic != b"glTF":
-                        return
-
-                    chunk_len, chunk_type = struct.unpack("<I4s", data[12:20])
-                    if chunk_type != b"JSON":
-                        return
-
-                    json_data = data[20:20 + chunk_len].decode("utf-8")
-                    gltf_json = json.loads(json_data)
-
-                    changed = patch_gltf_json(gltf_json, name_mapping, color_mapping, visual_tree)
-
-                    if not changed:
-                        return
-
-                    new_json_data = json.dumps(gltf_json, separators=(',', ':')).encode("utf-8")
-                    padding = (4 - len(new_json_data) % 4) % 4
-                    new_json_data += b' ' * padding
-
-                    new_chunk_len = len(new_json_data)
-                    new_length = length - chunk_len + new_chunk_len
-
-                    new_data = bytearray()
-                    new_data.extend(struct.pack("<4sII", magic, version, new_length))
-                    new_data.extend(struct.pack("<I4s", new_chunk_len, chunk_type))
-                    new_data.extend(new_json_data)
-                    new_data.extend(data[20 + chunk_len:])
-
-                    with open(glb_path, "wb") as f:
-                        f.write(new_data)
-
-                def patch_gltf_metadata(gltf_path, name_mapping, color_mapping):
-                    with open(gltf_path, "r", encoding="utf-8") as f:
-                        gltf_json = json.load(f)
-
-                    changed = patch_gltf_json(gltf_json, name_mapping, color_mapping, visual_tree)
-                    if not changed:
-                        return
-
-                    with open(gltf_path, "w", encoding="utf-8") as f:
-                        json.dump(gltf_json, f, separators=(",", ":"))
-
-                if export_format == "glb":
-                    patch_glb_metadata(str(output_path), tag_to_name, tag_to_color)
-                    from tertius_glb_runtime import deduplicate_glb_file
-
-                    deduplicate_glb_file(output_path)
-                else:
-                    patch_gltf_metadata(str(output_path), tag_to_name, tag_to_color)
-            except Exception as patch_e:
-                print("Failed to patch GLTF metadata:", patch_e)
+            cache_root = os.environ.get("TERTIUS_COMPONENT_CACHE_DIR")
+            scene_manifest, scene_counts = export_scene(
+                compound,
+                project_dir / "tertius-scene",
+                bd=bd,
+                export_patched_gltf=export_patched_gltf,
+                deflection=deflection,
+                angular_deflection=angular_deflection,
+                visual_tree=visual_tree,
+                model_geometry=model_geometry,
+                visual_source_map=visual_source_map,
+                part_component_names=part_component_names,
+                asset_cache_dir=Path(cache_root) / "scene-assets" if cache_root else None,
+            )
+            end_phase("scene")
+            (project_dir / "tertius-scene" / "counts.json").write_text(json.dumps(scene_counts), encoding="utf-8")
     elif export_format == "timus_views":
         import json
         from OCP.HLRBRep import HLRBRep_PolyAlgo, HLRBRep_PolyHLRToShape
@@ -495,6 +266,15 @@ try:
             json.dump(views, f)
     else:
         raise RuntimeError(f"Unsupported export format: {export_format}")
+    end_phase("finish" if "export" in phases else "export")
+    (project_dir / "tertius-compile-phases.json").write_text(json.dumps(phases), encoding="utf-8")
+    ready = project_dir / "tertius-result-ready.tmp"
+    ready.write_text("ready", encoding="utf-8")
+    ready.replace(project_dir / "tertius-result-ready")
+    if component_cache_enabled:
+        (project_dir / "tertius-cache-flush.json").write_text(
+            json.dumps(flush_component_cache()), encoding="utf-8"
+        )
 except Exception:
     traceback.print_exc()
     sys.exit(1)
@@ -509,17 +289,18 @@ class CompileSandboxResult:
     stderr: str
     error: str | None
     artifact_paths: dict[str, Path] = field(default_factory=dict)
+    component_report_path: Path | None = None
+    phases_path: Path | None = None
+    # With early_result: call to wait for the sandbox to finish storing new
+    # component cache entries (True if it stored them cleanly).
+    finish: Callable[[], bool] | None = None
 
 
-def _subprocess_output_text(value: str | bytes | None) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    return value
-
-
-def _sandbox_env(project_dir: Path) -> dict[str, str]:
+def _sandbox_env(
+    project_dir: Path,
+    component_cache_dir: Path | None = None,
+    scene_export: bool = False,
+) -> dict[str, str]:
     sandbox_home = str(project_dir)
     env = {
         "HOME": sandbox_home,
@@ -529,6 +310,10 @@ def _sandbox_env(project_dir: Path) -> dict[str, str]:
         "TMP": sandbox_home,
         "TEMP": sandbox_home,
     }
+    if component_cache_dir is not None:
+        env[COMPONENT_CACHE_DIR_ENV] = str(component_cache_dir)
+    if scene_export:
+        env["TERTIUS_SCENE_EXPORT"] = "1"
     if sys.platform == "win32":
         env["USERPROFILE"] = sandbox_home
         for name in ("SystemRoot", "WINDIR", "COMSPEC", "PATHEXT"):
@@ -555,6 +340,9 @@ def run_compile_sandbox(
     export_format: str,
     quality: str | None = None,
     timeout_seconds: int = 30,
+    component_cache_dir: Path | None = None,
+    early_result: bool = False,
+    scene_export: bool = False,
 ) -> CompileSandboxResult:
     ext = export_format.lower()
     if ext not in SUPPORTED_EXPORT_FORMATS:
@@ -576,6 +364,14 @@ def run_compile_sandbox(
         TERTIUS_MODEL_GEOMETRY_HELPER_SOURCE,
         encoding="utf-8",
     )
+    (project_dir / "tertius_glb_export.py").write_text(
+        Path(glb_export.__file__).read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (project_dir / "tertius_scene_export.py").write_text(
+        Path(scene_export_module.__file__).read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
     glb_helper_path = project_dir / "tertius_glb_runtime.py"
     glb_helper_path.write_text(
         Path(glb_dedup.__file__).read_text(encoding="utf-8"),
@@ -592,7 +388,7 @@ def run_compile_sandbox(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            env=_sandbox_env(project_dir),
+            env=_sandbox_env(project_dir, component_cache_dir, scene_export),
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
         )
     else:
@@ -602,25 +398,37 @@ def run_compile_sandbox(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            env=_sandbox_env(project_dir),
+            env=_sandbox_env(project_dir, component_cache_dir, scene_export),
             start_new_session=True,
         )
-    try:
-        stdout, stderr = process.communicate(timeout=timeout_seconds)
-    except subprocess.TimeoutExpired as exc:
-        _kill_process_tree(process)
-        stdout, stderr = process.communicate()
-        return CompileSandboxResult(
-            success=False,
-            output_path=None,
-            stdout=_subprocess_output_text(exc.stdout)
-            or _subprocess_output_text(stdout),
-            stderr=_subprocess_output_text(exc.stderr)
-            or _subprocess_output_text(stderr),
-            error=f"Compile timed out after {timeout_seconds} seconds",
-        )
+    output = _DrainedOutput(process)
+    deadline = monotonic() + timeout_seconds
+    ready_path = project_dir / RESULT_READY_FILENAME
+    finish: Callable[[], bool] | None = None
+    while process.poll() is None:
+        if early_result and ready_path.exists():
+            # Every output is written; the sandbox is now only storing new
+            # component cache entries, which the caller can wait for later.
+            finish = _sandbox_finisher(process, output, deadline)
+            break
+        if monotonic() >= deadline:
+            _kill_process_tree(process)
+            output.join()
+            return CompileSandboxResult(
+                success=False,
+                output_path=None,
+                stdout=output.stdout(),
+                stderr=output.stderr(),
+                error=f"Compile timed out after {timeout_seconds} seconds",
+            )
+        sleep(_POLL_SECONDS)
+    if finish is None:
+        output.join()
+    stdout, stderr = output.stdout(), output.stderr()
 
-    if process.returncode != 0:
+    # A failure after the ready marker only lost new cache entries: the
+    # outputs were complete.
+    if finish is None and process.returncode != 0 and not ready_path.exists():
         return CompileSandboxResult(
             success=False,
             output_path=None,
@@ -649,4 +457,70 @@ def run_compile_sandbox(
             for kind, filename in WORKBENCH_ARTIFACT_FILENAMES.items()
             if (project_dir / filename).is_file()
         },
+        component_report_path=_existing_file(project_dir / COMPONENT_REPORT_FILENAME),
+        phases_path=_existing_file(project_dir / PHASES_FILENAME),
+        finish=finish,
     )
+
+
+_POLL_SECONDS = 0.05
+# Time the sandbox always gets to store its cache entries after its outputs,
+# even when the compile used most of its budget.
+_FLUSH_GRACE_SECONDS = 120
+
+
+class _DrainedOutput:
+    """Reads a process's stdout and stderr on threads, so neither pipe can
+    fill and stall the process while the caller isn't waiting on it."""
+
+    def __init__(self, process: subprocess.Popen[str]) -> None:
+        self._chunks: dict[str, list[str]] = {"stdout": [], "stderr": []}
+        self._threads = [
+            threading.Thread(target=self._read, args=(stream, name), daemon=True)
+            for name, stream in (("stdout", process.stdout), ("stderr", process.stderr))
+            if stream is not None
+        ]
+        for thread in self._threads:
+            thread.start()
+
+    def _read(self, stream: Any, name: str) -> None:
+        for chunk in iter(lambda: stream.read(65536), ""):
+            self._chunks[name].append(chunk)
+        stream.close()
+
+    def join(self) -> None:
+        for thread in self._threads:
+            thread.join()
+
+    def stdout(self) -> str:
+        return "".join(self._chunks["stdout"])
+
+    def stderr(self) -> str:
+        return "".join(self._chunks["stderr"])
+
+
+def _sandbox_finisher(
+    process: subprocess.Popen[str], output: _DrainedOutput, deadline: float
+) -> Callable[[], bool]:
+    """Wait for a sandbox that has written its outputs to finish storing
+    cache entries. Returns whether it stored them cleanly."""
+    done: list[bool] = []
+
+    def finish() -> bool:
+        if done:
+            return done[0]
+        timeout = max(deadline - monotonic(), _FLUSH_GRACE_SECONDS)
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_process_tree(process)
+            process.wait()
+        output.join()
+        done.append(process.returncode == 0)
+        return done[0]
+
+    return finish
+
+
+def _existing_file(path: Path) -> Path | None:
+    return path if path.is_file() else None

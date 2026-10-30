@@ -1206,6 +1206,39 @@ if ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_SIDECAR_TTL_SECONDS' |
   exit 1
 fi
 
+# Incremental component compile (#313): the compile worker restores and
+# publishes tenant-scoped cache entries through the NATS Object Store; the
+# untrusted design.py sandbox never gets a shared persistent volume.
+if ! printf '%s
+' "$scaled_job" | rg -A 1 'name: COMPONENT_CACHE_ENABLED' | rg -q 'value: "true"'   || ! printf '%s
+' "$scaled_job" | rg -A 1 'name: COMPONENT_CACHE_TTL_SECONDS' | rg -q 'value: "1209600"'   || ! printf '%s
+' "$scaled_job" | rg -A 1 'name: COMPONENT_CACHE_MAX_BYTES' | rg -q 'value: "1073741824"'   || ! printf '%s
+' "$scaled_job" | rg -A 1 'name: COMPONENT_CACHE_PREFETCH_MAX_BYTES' | rg -q 'value: "536870912"'   || ! printf '%s
+' "$scaled_job" | rg -A 1 'name: COMPONENT_CACHE_MAX_ENTRY_BYTES' | rg -q 'value: "268435456"'; then
+  echo "Compile ScaledJob must enable the component cache with a 14-day TTL, 1 GiB capacity, 512 MiB prefetch budget and 128 MiB entry limit." >&2
+  exit 1
+fi
+
+if rg -q 'persistentVolumeClaim|hostPath' <<<"$scaled_job"; then
+  echo "Compile ScaledJob must not mount persistent storage; component cache entries go through the compile worker." >&2
+  exit 1
+fi
+
+if ! rg -q 'sizeLimit: "2Gi"' <<<"$scaled_job"; then
+  echo "Compile ScaledJob /tmp must have room for restored component cache entries (2Gi)." >&2
+  exit 1
+fi
+
+if ! helm template "$RELEASE_NAME" "$CHART_DIR" --set app.config.componentCacheEnabled=false   | rg -A 1 'name: COMPONENT_CACHE_ENABLED' | rg -q 'value: "false"'; then
+  echo "app.config.componentCacheEnabled=false must turn the component cache off for compile jobs." >&2
+  exit 1
+fi
+
+if helm template "$RELEASE_NAME" "$CHART_DIR" --set app.config.componentCachePrefetchMaxBytes=2147483648 >/dev/null 2>&1; then
+  echo "Helm must reject a component cache prefetch budget larger than the cache capacity." >&2
+  exit 1
+fi
+
 if ! rg -q '"max_payload": 33554432' <<<"$rendered"; then
   echo "NATS must render max_payload 33554432 so it can accept larger compile result messages." >&2
   exit 1

@@ -58,6 +58,12 @@ import {
   resolveExternalSelectionMeshes,
   updateViewerInstanceAppearance,
 } from '../scene/batching';
+import {
+  assembleScene,
+  createSceneAssetCache,
+  isSceneManifest,
+  type AnnotateGltf,
+} from '../scene/sceneManifest';
 import { ViewerControls } from './ViewerControls';
 
 export {
@@ -428,6 +434,10 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const meshRef = useRef<THREE.Object3D | null>(null);
+  // Parsed scene assets (#315), kept across compiles so an edit downloads
+  // only the changed components.
+  const sceneAssetCacheRef = useRef(createSceneAssetCache());
+  const sceneMaterialsRef = useRef(new Map<string, THREE.Material>());
   const animIdRef = useRef<number>(0);
   const modelLoadRequestRef = useRef<number>(0);
   const loadedModelUrlRef = useRef<string>('');
@@ -763,6 +773,8 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       model: THREE.Object3D,
       gltfJson?: GltfParserJson,
       gltfAssociations?: GltfAssociationMap,
+      // An assembled scene (#315) is glTF but arrives annotated, without JSON.
+      isGltf: boolean = Boolean(gltfJson),
     ) => {
       if (!isCurrentRequest()) return;
       if (gltfJson) annotateGltfNodeIds(model, gltfJson, gltfAssociations);
@@ -774,7 +786,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       model.position.sub(center);
 
       // GLTF is Y-up; STL emitted by the CAD compiler is already Z-up.
-      if (gltfJson) model.rotation.x = Math.PI / 2;
+      if (isGltf) model.rotation.x = Math.PI / 2;
 
       // Update camera
       if (cameraRef.current) {
@@ -851,9 +863,15 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
                geometry: mesh.geometry,
                sourceMaterial: mesh.material,
                matrix: relativeMatrix,
-               geometryKey: supportsGpuInstances && typeof meshId === 'number'
-                 ? `mesh:${meshId}:primitive:${typeof primitiveId === 'number' ? primitiveId : 0}`
-                 : undefined,
+               // Assembled scenes key meshes by content digest: glTF mesh
+               // indices only identify meshes within one asset.
+               geometryKey: !supportsGpuInstances
+                 ? undefined
+                 : typeof mesh.userData.tertiusGeometryKey === 'string'
+                   ? mesh.userData.tertiusGeometryKey
+                   : typeof meshId === 'number'
+                     ? `mesh:${meshId}:primitive:${typeof primitiveId === 'number' ? primitiveId : 0}`
+                     : undefined,
              });
            }
 
@@ -958,7 +976,39 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       finishLoad();
     };
 
-    apiFetch(modelUrl, getAccessToken)
+    // A per-component scene (#315) when the compile published one: only the
+    // assets not already in this viewer's cache are downloaded and parsed.
+    const sceneUrl = modelUrl.replace(/\/model(?=\?|$)/, '/scene');
+    const sceneAssetUrl = (assetId: string) => modelUrl.replace(/\/model(\?.*)?$/, `/scene-assets/${assetId}`);
+    const loadScene = async (): Promise<boolean> => {
+      try {
+        const res = await apiFetch(sceneUrl, getAccessToken);
+        if (!res.ok) return false;
+        const body = await res.json();
+        if (!isSceneManifest(body?.manifest)) return false;
+        const assembled = await assembleScene(body.manifest, {
+          fetchAsset: async (assetId) => {
+            const assetRes = await apiFetch(sceneAssetUrl(assetId), getAccessToken);
+            if (!assetRes.ok) throw new Error(`Scene asset unavailable (${assetRes.status || 'HTTP error'})`);
+            return assetRes.arrayBuffer();
+          },
+          parse: (buffer) => gltfLoader.parseAsync(buffer, ''),
+          annotate: annotateGltfNodeIds as unknown as AnnotateGltf,
+          cache: sceneAssetCacheRef.current,
+          materials: sceneMaterialsRef.current,
+        });
+        if (!isCurrentRequest()) return true;
+        loadSpan.setAttribute('scene.assets', assembled.assets);
+        loadSpan.setAttribute('scene.assets_fetched', assembled.fetched);
+        await acceptModel(assembled.scene, undefined, undefined, true);
+        return true;
+      } catch (err) {
+        console.warn('Scene manifest could not be loaded; loading the monolithic model.', err);
+        return false;
+      }
+    };
+
+    const loadMonolithic = () => apiFetch(modelUrl, getAccessToken)
       .then(res => {
         if (!res.ok) {
           throw new Error(`Model artifact unavailable (${res.status || 'HTTP error'})`);
@@ -993,7 +1043,11 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       .catch(err => {
         failLoad(err instanceof Error ? err.message : "Model artifact could not be loaded.", err);
       });
-      
+
+    void loadScene().then((loaded) => {
+      if (!loaded && isCurrentRequest()) void loadMonolithic();
+    });
+
     return () => {
       isCancelled = true;
       if (!loadSpanEnded) {

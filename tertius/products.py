@@ -45,6 +45,10 @@ class ProcurementFacet:
             "ordering": thaw_json(self.ordering),
         }
 
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> "ProcurementFacet":
+        return cls(**payload)
+
 
 @dataclass(frozen=True)
 class StructuralFacet:
@@ -93,6 +97,10 @@ class StructuralFacet:
             "evidence_basis": self.evidence_basis,
         }
 
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> "StructuralFacet":
+        return cls(**payload)
+
 
 @dataclass(frozen=True)
 class DrawingFacet:
@@ -109,6 +117,10 @@ class DrawingFacet:
 
     def payload(self) -> dict[str, Any]:
         return {"name": self.name, "attributes": thaw_json(self.attributes)}
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> "DrawingFacet":
+        return cls(**payload)
 
 
 @dataclass(frozen=True)
@@ -200,3 +212,38 @@ class ProductDefinition:
         if include_digest:
             payload["definition_digest"] = self.definition_digest
         return payload
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> "ProductDefinition":
+        """Rebuild a definition from payload(); a digest in the payload
+        must match the rebuilt definition's."""
+        catalogue = payload.get("catalogue")
+        product = cls(
+            key=payload["key"],
+            label=payload["label"],
+            geometry=payload["geometry"],
+            classification=payload["classification"],
+            catalogue_id=catalogue["id"] if catalogue else None,
+            catalogue_revision=catalogue["revision"] if catalogue else None,
+            catalogue_row=catalogue["row"] if catalogue else {},
+            procurement=(
+                ProcurementFacet.from_payload(payload["procurement"])
+                if payload.get("procurement")
+                else None
+            ),
+            structural=(
+                StructuralFacet.from_payload(payload["structural"])
+                if payload.get("structural")
+                else None
+            ),
+            drawing=(
+                DrawingFacet.from_payload(payload["drawing"])
+                if payload.get("drawing")
+                else None
+            ),
+            port_families=payload["port_families"],
+        )
+        expected = payload.get("definition_digest")
+        if expected is not None and expected != product.definition_digest:
+            raise ValueError(f"product {product.key!r} payload does not match its digest")
+        return product

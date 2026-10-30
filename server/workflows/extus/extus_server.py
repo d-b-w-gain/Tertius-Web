@@ -21,6 +21,8 @@ from core.auth_types import AuthContext
 from core.db import get_db
 from core.gltf_geometry import model_site_dimensions
 from core.models import Artifact, Project, UserWorkspaceState
+from core.repositories import CompileRepository
+from core.scene_manifest import ASSET_ID
 
 logger = logging.getLogger(__name__)
 
@@ -286,6 +288,54 @@ def get_procurement_analysis(
     with a GLTF-derived approximation.
     """
     return get_procurement(ctx=ctx, db=db)
+
+
+@app.get("/scene")
+def get_scene(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+    """The per-component scene manifest (#314) of the latest model, if that
+    compile published one; 404 means load the monolithic model instead."""
+    model_artifact = get_latest_model_artifact(db, ctx, include_content=False)
+    if model_artifact is None or model_artifact.compile_job_id is None:
+        return JSONResponse(status_code=404, content={"error": "Scene not found"})
+    scene_artifact = db.scalar(
+        select(Artifact).where(
+            Artifact.tenant_id == ctx.tenant_id,
+            Artifact.project_id == model_artifact.project_id,
+            Artifact.compile_job_id == model_artifact.compile_job_id,
+            Artifact.kind == "scene",
+        )
+    )
+    if scene_artifact is None or scene_artifact.content is None:
+        return JSONResponse(status_code=404, content={"error": "Scene not found"})
+    manifest = json.loads(scene_artifact.content.decode("utf-8"))
+    manifest.pop("asset_refs", None)        # transport detail
+    return {
+        "manifest": manifest,
+        "model_artifact_id": str(model_artifact.id),
+        "scene_artifact_id": str(scene_artifact.id),
+    }
+
+
+@app.get("/scene-assets/{asset_id}")
+def get_scene_asset(
+    asset_id: str,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    """One immutable scene asset: its ID names its content, so browsers keep it."""
+    if not ASSET_ID.match(asset_id):
+        return JSONResponse(status_code=404, content={"error": "Scene asset not found"})
+    asset = CompileRepository(db, ctx.tenant_id).get_scene_asset(asset_id)
+    if asset is None:
+        return JSONResponse(status_code=404, content={"error": "Scene asset not found"})
+    return Response(
+        content=asset.content,
+        media_type="model/gltf-binary",
+        headers={
+            "Cache-Control": "private, max-age=31536000, immutable",
+            "ETag": f'"{asset.sha256}"',
+        },
+    )
 
 
 @app.get("/artifacts/{artifact_id}/model")

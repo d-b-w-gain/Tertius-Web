@@ -99,6 +99,35 @@ class CompileSidecarStore:
             await self.get(ref)
         return ref
 
+    async def put_if_absent(self, content: bytes) -> ObjectRef:
+        """put(), but an object already stored under the content's digest is
+        checked by its metadata alone, not downloaded: callers that store the
+        same large objects on every compile (scene assets) skip the copy.
+        Readers still verify size and digest on get()."""
+        if not isinstance(content, bytes):
+            raise TypeError("content must be bytes")
+        if not content or len(content) > self.max_object_bytes:
+            raise ObjectIntegrityError("object is too large or empty")
+        digest = hashlib.sha256(content).hexdigest()
+        ref = ObjectRef(bucket=self.bucket, key=f"sha256/{digest}", sha256=digest, byte_size=len(content))
+        try:
+            info = await self.store.get_info(ref.key)
+        except Exception as exc:
+            if not _is_not_found(exc):
+                raise ObjectStoreUnavailableError("object store operation failed") from exc
+            info = None
+        if (
+            info is not None
+            and not getattr(info, "deleted", False)
+            and getattr(info, "size", None) == ref.byte_size
+        ):
+            return ref
+        try:
+            await self.store.put(ref.key, content)
+        except Exception as exc:
+            raise ObjectStoreUnavailableError("object store operation failed") from exc
+        return ref
+
     async def get(self, ref: ObjectRef) -> bytes:
         if not isinstance(ref, ObjectRef):
             raise TypeError("ref must be an ObjectRef")

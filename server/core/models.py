@@ -474,6 +474,23 @@ class Artifact(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
 
 
+class SceneAsset(Base):
+    """One per-component GLB of a scene manifest (#314), shared by every
+    manifest in the tenant that uses it. Immutable: an asset ID names its
+    content, so a row is written once and never updated."""
+
+    __tablename__ = "scene_assets"
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True
+    )
+    asset_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    byte_size: Mapped[int] = mapped_column(nullable=False)
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+
+
 class TimusSettings(Base):
     __tablename__ = "timus_settings"
     __table_args__ = (

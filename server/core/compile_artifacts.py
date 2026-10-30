@@ -22,6 +22,13 @@ JSON_SCHEMAS = {
     "drawing": "tertius.drawing.v1",
     "bounds": "tertius.bounds.v1",
 }
+# Present when the design uses cached components (#312/#313): each component
+# geometry's part number and cache status.
+OPTIONAL_JSON_SCHEMAS = {
+    "components": "tertius.components.v1",
+    # Per-component viewer scene (#314); see core.scene_manifest.
+    "scene": "tertius.scene.v1",
+}
 
 
 def _canonical_json_bytes(value: object) -> bytes:
@@ -120,7 +127,20 @@ def validate_compile_bundle(
     if sum(len(content) for content in decoded.values()) > MAX_DECOMPRESSED_BUNDLE_BYTES:
         raise ValueError("compile artifact bundle exceeds the decompressed size limit")
     _validate_workbench_cross_links(decoded)
+    _validate_optional_documents(decoded)
     return decoded
+
+
+def _validate_optional_documents(decoded: dict[str, bytes]) -> None:
+    for kind, schema in OPTIONAL_JSON_SCHEMAS.items():
+        if kind not in decoded:
+            continue
+        try:
+            document = json.loads(decoded[kind])
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"artifact {kind!r} is not valid JSON") from exc
+        if not isinstance(document, dict) or document.get("schema_version") != schema:
+            raise ValueError(f"artifact {kind!r} has an unsupported schema version")
 
 
 def _validate_workbench_cross_links(decoded: dict[str, bytes]) -> None:

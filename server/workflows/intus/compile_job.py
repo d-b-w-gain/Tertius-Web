@@ -4,7 +4,13 @@ import asyncio
 import hashlib
 import json
 import logging
+import shutil
+import tempfile
+from collections.abc import Awaitable, Callable
+from contextlib import ExitStack, contextmanager
+from typing import Any
 from datetime import datetime, timezone
+from pathlib import Path
 from time import perf_counter
 from uuid import UUID
 
@@ -28,6 +34,17 @@ from core.compile_artifacts import (
     validate_compile_bundle,
 )
 from core.compile_sandbox import run_compile_sandbox
+from core.scene_manifest import ASSET_ID, scene_assets
+from core.component_cache import (
+    CacheScope,
+    ComponentCacheStore,
+    load_json_file,
+    open_component_cache_store,
+    prefetch_entries,
+    publish_entries,
+    record_compile_phases,
+    record_component_report,
+)
 from core.config import get_settings
 from core.nats_client import (
     NatsPublisher,
@@ -55,14 +72,137 @@ from core.telemetry import (
 
 logger = logging.getLogger(__name__)
 
+COMPONENT_RUN_REPORT = "run-report.json"
+SCENE_DIRNAME = "tertius-scene"
+# {asset id: GLB path} -> {asset id: ObjectRef as a dict}, run on the
+# worker's event loop from the compile thread.
+SceneUpload = Callable[[dict[str, Path]], dict[str, dict]]
+
+
+def _scene_artifact(scene_dir: Path, upload: SceneUpload) -> bytes | None:
+    """The scene manifest with its assets uploaded, or None: without it the
+    result still carries the monolithic GLB, which the viewer falls back to."""
+    try:
+        manifest = json.loads((scene_dir / "scene.json").read_text(encoding="utf-8"))
+        assets = {
+            asset_id: scene_dir / "assets" / f"{asset_id}.glb"
+            for asset_id in manifest.get("assets") or []
+            if isinstance(asset_id, str) and ASSET_ID.match(asset_id)
+        }
+        manifest["asset_refs"] = upload(assets)
+        scene_assets(manifest)
+    except Exception:
+        logger.warning("Scene manifest could not be published; using the monolithic GLB", exc_info=True)
+        counter_add("tertius.compile.scene.publish", 1, {"outcome": "failed"})
+        return None
+    counter_add("tertius.compile.scene.publish", 1, {"outcome": "ok"})
+    return json.dumps(manifest, separators=(",", ":"), allow_nan=False).encode("utf-8")
+
+
+def _scene_uploader(object_store) -> SceneUpload:
+    """Upload scene assets through the sidecar store from a compile thread."""
+    loop = asyncio.get_running_loop()
+
+    def upload(assets: dict[str, Path]) -> dict[str, dict]:
+        async def put_all() -> dict[str, dict]:
+            refs = {}
+            for asset_id, path in assets.items():
+                ref = await object_store.put_if_absent(path.read_bytes())
+                refs[asset_id] = ref.model_dump()
+            return refs
+
+        return asyncio.run_coroutine_threadsafe(put_all(), loop).result(timeout=600)
+
+    return upload
+
 
 def _hash_llm_edit_job_id(job_id: UUID) -> str:
     return hashlib.sha256(str(job_id).encode("ascii")).hexdigest()[:16]
 
 
+def _component_cache_enabled(settings, component_cache) -> bool:
+    return component_cache is not None and bool(
+        getattr(settings, "component_cache_enabled", False)
+    )
+
+
+async def _execute_with_component_cache(
+    command: CompileCommand,
+    settings,
+    binary_files: dict[str, bytes] | None,
+    component_cache: ComponentCacheStore | None,
+    span,
+    object_store=None,
+) -> tuple[CompileResultPayload, Callable[[], Awaitable[None]] | None]:
+    """Run one compile, restoring the project's cached components before it.
+    Returns the result as soon as the sandbox's outputs are written, with a
+    step to run after the result is published: it waits for the sandbox to
+    write the components it built and stores them for the next compile.
+    Store trouble only costs speed: the compile runs cold and still
+    succeeds."""
+    args = (command, settings) if binary_files is None else (command, settings, binary_files)
+    if not _component_cache_enabled(settings, component_cache):
+        return await asyncio.to_thread(execute_compile_command, *args), None
+    assert component_cache is not None
+    scope = CacheScope.for_project(command.tenant_id, command.project_id)
+    cache_dir = Path(tempfile.mkdtemp(prefix="tertius-component-cache-"))
+    try:
+        prefetch = await prefetch_entries(
+            component_cache,
+            scope,
+            cache_dir,
+            max_bytes=settings.component_cache_prefetch_max_bytes,
+        )
+        span.set_attribute("tertius.component_cache.prefetch_outcome", prefetch.outcome)
+        span.set_attribute("tertius.component_cache.prefetched_entries", prefetch.entries)
+        scene_upload = (
+            _scene_uploader(object_store)
+            if object_store is not None and getattr(settings, "scene_export_enabled", False)
+            else None
+        )
+        result, finish = await asyncio.to_thread(
+            _execute_compile_command,
+            command,
+            settings,
+            binary_files,
+            cache_dir,
+            finish_later=True,
+            scene_upload=scene_upload,
+        )
+    except BaseException:
+        shutil.rmtree(cache_dir, ignore_errors=True)
+        raise
+
+    async def store_new_entries() -> None:
+        try:
+            if finish is not None:
+                stored = await asyncio.to_thread(finish)
+                span.set_attribute("tertius.component_cache.entries_written", stored)
+            report = load_json_file(cache_dir / COMPONENT_RUN_REPORT)
+            if result.status == "succeeded" and report is not None:
+                counts = report.get("counts") or {}
+                for status in ("hit", "built", "uncacheable"):
+                    if isinstance(counts.get(status), int):
+                        span.set_attribute(f"tertius.component_cache.{status}", counts[status])
+                published = await publish_entries(component_cache, scope, cache_dir, report)
+                span.set_attribute("tertius.component_cache.publish_outcome", published.outcome)
+        finally:
+            shutil.rmtree(cache_dir, ignore_errors=True)
+
+    return result, store_new_entries
+
+
 async def handle_compile_request_message(
-    msg, publisher: Publisher, settings, object_store=None
+    msg,
+    publisher: Publisher,
+    settings,
+    object_store=None,
+    component_cache=None,
+    deferred: list[Callable[[], Awaitable[None]]] | None = None,
 ) -> None:
+    """Handle one compile request. With `deferred`, storing the compile's new
+    component cache entries (after the result is published) is appended to
+    it for the caller to run, instead of being awaited here."""
     context = extract_nats_context(getattr(msg, "headers", None))
     subject = getattr(msg, "subject", "tertius.compile.request")
     attributes = {
@@ -106,6 +246,7 @@ async def handle_compile_request_message(
             {"export_format": command.export_format},
         )
         start = perf_counter()
+        after_publish: Callable[[], Awaitable[None]] | None = None
         try:
             binary_files: dict[str, bytes] = {}
             if command.assets:
@@ -145,18 +286,15 @@ async def handle_compile_request_message(
                             retryable=False,
                         )
                     else:
-                        result = await asyncio.to_thread(
-                            execute_compile_command,
-                            command,
-                            settings,
-                            binary_files,
+                        result, after_publish = await _execute_with_component_cache(
+                            command, settings, binary_files, component_cache, span, object_store
                         )
             else:
                 # Keep the NATS event loop responsive while CAD runs in its bounded
                 # subprocess. Otherwise a long Build123D compile prevents client
                 # keepalives and the result publish loses its connection.
-                result = await asyncio.to_thread(
-                    execute_compile_command, command, settings
+                result, after_publish = await _execute_with_component_cache(
+                    command, settings, None, component_cache, span, object_store
                 )
             assert_message_size(
                 result,
@@ -182,7 +320,21 @@ async def handle_compile_request_message(
             histogram_record(
                 "tertius.compile.job.duration", elapsed_seconds(start), labels
             )
+            if after_publish is not None:
+                # The user has the result; storing new cached components only
+                # speeds up the next compile, so it can't fail this one.
+                store_entries, after_publish = after_publish, None
+                if deferred is not None:
+                    deferred.append(_logged_store(store_entries))
+                else:
+                    await _logged_store(store_entries)()
         except Exception as exc:
+            if after_publish is not None:
+                # Still wait for the sandbox and remove its folders.
+                try:
+                    await after_publish()
+                except Exception:
+                    logger.warning("Component cache clean-up failed", exc_info=True)
             logger.exception("Compile job failed before request ack")
             record_exception(span, exc)
             span.set_attribute("messaging.nats.ack_action", "nak")
@@ -199,10 +351,81 @@ async def handle_compile_request_message(
             await msg.nak()
 
 
+def _logged_store(store_entries: Callable[[], Awaitable[None]]) -> Callable[[], Awaitable[None]]:
+    async def store() -> None:
+        try:
+            await store_entries()
+        except Exception:
+            logger.warning("Storing new component cache entries failed", exc_info=True)
+
+    return store
+
+
 def execute_compile_command(
     command: CompileCommand,
     settings,
     binary_files: dict[str, bytes] | None = None,
+    component_cache_dir: Path | None = None,
+) -> CompileResultPayload:
+    result, finish = _execute_compile_command(
+        command, settings, binary_files, component_cache_dir, finish_later=False
+    )
+    return result
+
+
+def _execute_compile_command(
+    command: CompileCommand,
+    settings,
+    binary_files: dict[str, bytes] | None,
+    component_cache_dir: Path | None,
+    *,
+    finish_later: bool,
+    scene_upload: SceneUpload | None = None,
+) -> tuple[CompileResultPayload, Callable[[], bool] | None]:
+    """Run one compile. With finish_later, return as soon as the sandbox's
+    outputs are written, with a callable that waits for it to finish
+    storing new component cache entries (and then removes the project
+    folder); otherwise wait for everything."""
+    stack = ExitStack()
+    sandbox_finish: list[Callable[[], bool]] = []
+    try:
+        result = _run_compile(
+            command, settings, binary_files, component_cache_dir, stack, finish_later, sandbox_finish,
+            scene_upload,
+        )
+    except BaseException:
+        for finish in sandbox_finish:
+            finish()
+        stack.close()
+        raise
+    if not sandbox_finish:
+        stack.close()
+        return result, None
+
+    def finish_and_clean_up() -> bool:
+        try:
+            return sandbox_finish[0]()
+        finally:
+            stack.close()
+
+    return result, finish_and_clean_up
+
+
+@contextmanager
+def _kept(stack: ExitStack, context):
+    """Enter a context into stack, so it outlives the with block using it."""
+    yield stack.enter_context(context)
+
+
+def _run_compile(
+    command: CompileCommand,
+    settings,
+    binary_files: dict[str, bytes] | None,
+    component_cache_dir: Path | None,
+    stack: ExitStack,
+    finish_later: bool,
+    sandbox_finish: list[Callable[[], bool]],
+    scene_upload: SceneUpload | None = None,
 ) -> CompileResultPayload:
     started_at = now_utc()
     if not command.files:
@@ -216,13 +439,29 @@ def execute_compile_command(
         )
 
     files = {file.filename: file.content for file in command.files}
-    with hydrate_project_files(files, binary_files) as project_dir:
+    with _kept(stack, hydrate_project_files(files, binary_files)) as project_dir:
+        sandbox_options: dict[str, Any] = {}
+        if component_cache_dir is not None:
+            sandbox_options["component_cache_dir"] = component_cache_dir
+        if finish_later:
+            sandbox_options["early_result"] = True
+        export_scene = (
+            scene_upload is not None
+            and component_cache_dir is not None
+            and command.export_format == "glb"
+        )
+        if export_scene:
+            sandbox_options["scene_export"] = True
         result = run_compile_sandbox(
             project_dir,
             command.export_format,
             quality=command.quality,
             timeout_seconds=settings.compile_timeout_seconds,
+            **sandbox_options,
         )
+        finish = getattr(result, "finish", None)
+        if finish is not None:
+            sandbox_finish.append(finish)
         if not result.success:
             error = result.error or result.stderr or "Compile failed"
             return _failed_result(
@@ -266,6 +505,23 @@ def execute_compile_command(
                 if kind in WORKBENCH_ARTIFACT_KINDS
             },
         }
+        phases = load_json_file(getattr(result, "phases_path", None))
+        if phases is not None:
+            record_compile_phases(phases, command.export_format)
+        component_report_path = getattr(result, "component_report_path", None)
+        component_report = load_json_file(component_report_path)
+        if component_report_path is not None and component_report is not None:
+            record_component_report(component_report, command.export_format)
+            artifact_contents["components"] = component_report_path.read_bytes()
+            if component_cache_dir is not None:
+                shutil.copyfile(
+                    component_report_path, component_cache_dir / COMPONENT_RUN_REPORT
+                )
+        if export_scene:
+            assert scene_upload is not None
+            scene = _scene_artifact(project_dir / SCENE_DIRNAME, scene_upload)
+            if scene is not None:
+                artifact_contents["scene"] = scene
         try:
             compiled_design = json.loads(artifact_contents["compiled_design"])
             if not isinstance(compiled_design, dict):
@@ -358,26 +614,82 @@ async def run_once() -> int:
         js = await ensure_compile_stream(nc, settings)
         publisher = NatsPublisher(js)
         subscription = await pull_compile_subscription(js, settings)
+        started = perf_counter()
         try:
             messages = await subscription.fetch(batch=1, timeout=5)
         except TimeoutError:
             return 0
 
         object_store = None
-        for msg in messages:
+        component_cache = None
+        saves: set[asyncio.Task[None]] = set()
+
+        async def handle(msg) -> None:
+            nonlocal object_store, component_cache
             try:
                 command = CompileCommand.model_validate_json(msg.data)
             except Exception:
                 command = None
-            if command is not None and command.assets and object_store is None:
+            wants_sidecars = command is not None and (
+                command.assets or getattr(settings, "scene_export_enabled", False)
+            )
+            if wants_sidecars and object_store is None:
                 try:
                     object_store = await open_compile_sidecar_store(js, settings)
                 except ObjectStoreUnavailableError:
                     logger.exception("Compile sidecar Object Store is unavailable")
-            await handle_compile_request_message(msg, publisher, settings, object_store)
+            if (
+                command is not None
+                and getattr(settings, "component_cache_enabled", False)
+                and component_cache is None
+            ):
+                try:
+                    component_cache = await open_component_cache_store(js, settings)
+                except ObjectStoreUnavailableError:
+                    # A cold compile is slower, not wrong.
+                    logger.warning("Component cache Object Store is unavailable")
+                    counter_add(
+                        "tertius.compile.component_cache.store.operations",
+                        1,
+                        {"operation": "open", "outcome": "unavailable"},
+                    )
+            if component_cache is not None:
+                deferred: list[Callable[[], Awaitable[None]]] = []
+                await handle_compile_request_message(
+                    msg, publisher, settings, object_store, component_cache, deferred
+                )
+                saves.update(asyncio.ensure_future(store()) for store in deferred)
+            else:
+                await handle_compile_request_message(msg, publisher, settings, object_store)
+
+        while messages:
+            for msg in messages:
+                await handle(msg)
+            messages = await _next_while_saving(subscription, saves, settings, started)
+        await asyncio.gather(*saves)
         return 0
     finally:
         await nc.close()
+
+
+async def _next_while_saving(
+    subscription, saves: set[asyncio.Task[None]], settings, started: float
+) -> list:
+    """The next request, taken while this pod is still storing a finished
+    compile's cache entries. KEDA counts the pod as a running job until it
+    exits, so it starts no new one for a request queued behind the save;
+    this pod runs it instead. Only taken while a whole compile still fits in
+    the job's deadline (activeDeadlineSeconds allows two compile timeouts)."""
+    budget = getattr(settings, "compile_timeout_seconds", 300)
+    while saves and perf_counter() - started < budget:
+        try:
+            messages = await subscription.fetch(batch=1, timeout=1)
+        except TimeoutError:
+            messages = []
+        saves.difference_update({task for task in saves if task.done()})
+        if messages:
+            return messages
+    return []
 
 
 def main() -> None:

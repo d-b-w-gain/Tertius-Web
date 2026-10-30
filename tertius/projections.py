@@ -513,9 +513,12 @@ def bounds_projection(
     model: bd.Shape,
 ) -> dict[str, Any]:
     bounds = model.bounding_box()
-    minimum = [float(bounds.min.X), float(bounds.min.Y), float(bounds.min.Z)]
-    maximum = [float(bounds.max.X), float(bounds.max.Y), float(bounds.max.Z)]
-    size = [maximum[index] - minimum[index] for index in range(3)]
+    # Rounded to a nanometre: geometry read back from a cached component
+    # differs from a fresh build only in the last bits of a double, and the
+    # artifact must not change with it.
+    minimum = [round(float(value), 6) for value in (bounds.min.X, bounds.min.Y, bounds.min.Z)]
+    maximum = [round(float(value), 6) for value in (bounds.max.X, bounds.max.Y, bounds.max.Z)]
+    size = [round(maximum[index] - minimum[index], 6) for index in range(3)]
     return _with_projection_digest(
         {
             "schema_version": BOUNDS_SCHEMA,
