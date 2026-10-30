@@ -299,13 +299,13 @@ def annotate_mesh_digests(data: bytes) -> bytes:
     for mesh in meshes:
         if not isinstance(mesh, dict):
             continue
-        primitives = []
+        primitives: list[list[Any]] | None = []
         for primitive in mesh.get("primitives") or []:
             attributes = {
                 name: accessor_digest(index) for name, index in sorted((primitive.get("attributes") or {}).items())
             }
             indices = accessor_digest(primitive.get("indices")) if "indices" in primitive else ""
-            if None in attributes.values() or indices is None:
+            if None in attributes.values() or indices is None or primitives is None:
                 primitives = None
                 break
             primitives.append([primitive.get("mode", 4), attributes, indices])
