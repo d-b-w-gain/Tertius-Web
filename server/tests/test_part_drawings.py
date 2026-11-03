@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 
 import build123d as bd
@@ -282,3 +283,61 @@ def test_drawings_need_a_current_build(authenticated_timus_client, db_session, s
     for path in ("drawings", "drawings/Mount_Angle.json", "drawings/Mount_Angle.pdf"):
         response = authenticated_timus_client.get(f"/projects/default_purlin/{path}")
         assert response.status_code == 409, path
+
+
+# ------------------------------------------------- ordinate and angle dimensions
+def _plate_drawing() -> dict:
+    """A 100 x 60 plate with a 30 deg top edge corner and three holes."""
+    with bd.BuildPart() as bp:
+        with bd.BuildSketch(bd.Plane.XZ):
+            bd.Polygon((0, 0), (100, 0), (100, 60), (0, 60 + 100 * math.tan(math.radians(30))), align=None)
+        bd.extrude(amount=3)
+    part = bp.part
+    assert part is not None
+    holes = [(20.0, 0.0, 20.0), (20.0, 0.0, 40.0), (21.0, 0.0, 40.0)]  # 21 and 20 are close in x
+    with compile_session():
+        drw = Drawing("Plate", part, decimals=1)
+        front = drw.view("front", at=(150, 150))
+        front.ordinate((0, 0, 0), holes + [(100, 0, 0)], axis="horizontal", offset=-10)
+        front.ordinate((0, 0, 0), holes, axis="vertical", offset=-10)
+        top_left = (0.0, 0.0, 60 + 100 * math.tan(math.radians(30)))
+        front.angle((100, 0, 60), (0, 0, 60), top_left, radius=30)
+        return project_drawing(drw)
+
+
+def test_ordinates_measure_from_the_origin_once_per_value():
+    doc = _plate_drawing()
+    horizontal, vertical, _ = doc["dimensions"]
+    assert horizontal["values"] == pytest.approx([0.0, 20.0, 21.0, 100.0])
+    assert [i["text"] for i in horizontal["items"]] == ["0", "20.0", "21.0", "100.0"]
+    assert vertical["values"] == pytest.approx([0.0, 20.0, 40.0])  # 40 appears once
+    # 20 and 21 sit 1 mm apart: their texts are jogged at least the pitch apart.
+    xs = [i["text_at"][0] for i in horizontal["items"]]
+    assert xs[2] - xs[1] >= 3.6 - 1e-9
+    jogged = horizontal["items"][1]["path"]
+    assert len(jogged) == 3 and jogged[0][0] != pytest.approx(jogged[-1][0])
+    # All values line up on one baseline below the view.
+    frame = doc["views"][0]["frame"]
+    assert {round(i["path"][-1][1], 6) for i in horizontal["items"]} == {round(frame[1] - 10, 6)}
+
+
+def test_angle_is_measured_true_in_the_view():
+    doc = _plate_drawing()
+    angle = doc["dimensions"][2]
+    assert angle["value"] == pytest.approx(30.0)
+    assert angle["text"] == "30.0°"
+    assert len(angle["arc"]) == 25
+
+
+def test_angle_out_of_the_view_plane_is_refused():
+    with compile_session():
+        drw = Drawing("Bad", _angle())
+        front = drw.view("front", at=(150, 150))
+        front.angle((0, 0, 0), (10, 0, 0), (0, -10, 0))
+        with pytest.raises(DrawingError, match="not in the plane"):
+            project_drawing(drw)
+
+
+def test_ordinate_and_angle_render():
+    pdf = render_part_drawing_pdf(_plate_drawing())
+    assert pdf.startswith(b"%PDF-")

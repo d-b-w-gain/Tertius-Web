@@ -68,6 +68,8 @@ EXTENSION_OVERSHOOT_MM = 2.0
 ARROW_LENGTH_MM = 3.0
 TEXT_HEIGHT_MM = 2.5
 CURVE_CHORD_MM = 0.5  # sheet-space spacing when a curve has to be sampled
+ORDINATE_TEXT_PITCH_MM = 3.6  # minimum spacing between ordinate values
+ORDINATE_JOG_MM = 5.0  # length of the straight run before a jogged leg bends
 
 
 class DrawingError(ValueError):
@@ -99,13 +101,15 @@ def _unit(value: Any, what: str) -> bd.Vector:
 
 @dataclass
 class _Dimension:
-    kind: str  # linear | diameter | radius
+    kind: str  # linear | diameter | radius | ordinate | angle
     points: tuple[bd.Vector, ...] = ()
     axis: str = "auto"  # auto | horizontal | vertical | aligned
     offset: float = -10.0
     angle: float = 45.0
     leader: float = 10.0
     circle: tuple[bd.Vector, float, bd.Vector] | None = None  # centre, radius, normal
+    labels: tuple[str | None, ...] = ()  # ordinate: optional text per point
+    arc_radius: float = 20.0  # angle: arc radius in sheet mm
     text: str | None = None
     prefix: str = ""
     suffix: str = ""
@@ -219,6 +223,70 @@ class View:
 
     def aligned(self, p1: Any, p2: Any, **kwargs: Any) -> "View":
         return self.linear(p1, p2, axis="aligned", **kwargs)
+
+    def ordinate(
+        self,
+        origin: Any,
+        points: Sequence[Any],
+        *,
+        axis: str = "horizontal",
+        offset: float = -10.0,
+        labels: Sequence[str | None] | None = None,
+        decimals: int | None = None,
+    ) -> "View":
+        """Ordinate (baseline) dimensions: every point's distance from ``origin``.
+
+        ``axis="horizontal"`` measures along the sheet's x and lines the
+        values up on a baseline below (``offset`` < 0) or above the view;
+        ``"vertical"`` measures along y with the values left (``offset`` < 0)
+        or right of the view. ``origin`` is labelled 0. Points at the same
+        distance are shown once; values too close to read are jogged apart.
+        """
+        if axis not in {"horizontal", "vertical"}:
+            raise DrawingError("ordinate axis must be horizontal or vertical")
+        pts = tuple(_point(p, "ordinate point") for p in points)
+        if not pts:
+            raise DrawingError("ordinate needs at least one point")
+        texts = tuple(labels) if labels is not None else (None,) * len(pts)
+        if len(texts) != len(pts):
+            raise DrawingError("ordinate labels must match the points")
+        self.dimensions.append(_Dimension(
+            kind="ordinate",
+            points=(_point(origin, "ordinate origin"), *pts),
+            axis=axis,
+            offset=float(offset),
+            labels=texts,
+            decimals=decimals,
+        ))
+        return self
+
+    def angle(
+        self,
+        vertex: Any,
+        p1: Any,
+        p2: Any,
+        *,
+        radius: float = 20.0,
+        text: str | None = None,
+        prefix: str = "",
+        suffix: str = "",
+        decimals: int | None = None,
+    ) -> "View":
+        """The angle at ``vertex`` between the lines to ``p1`` and ``p2``,
+        drawn as an arc of ``radius`` sheet mm. Both lines must lie in the
+        view plane, so the angle is seen true."""
+        if radius <= 0:
+            raise DrawingError("angle arc radius must be positive")
+        self.dimensions.append(_Dimension(
+            kind="angle",
+            points=(_point(vertex, "angle vertex"), _point(p1, "angle point"), _point(p2, "angle point")),
+            arc_radius=float(radius),
+            text=text,
+            prefix=prefix,
+            suffix=suffix,
+            decimals=decimals,
+        ))
+        return self
 
     def diameter(self, circle: Any = None, **kwargs: Any) -> "View":
         """Ø of a circle seen face-on in this view, with a leader.
@@ -560,6 +628,138 @@ def _ext_line(point: Point2, on_line: Point2) -> list[list[float]] | None:
     return [list(start), list(end)]
 
 
+def _spread(positions: Sequence[float], pitch: float) -> list[float]:
+    """Text positions at least ``pitch`` apart, as close to ``positions``
+    (sorted ascending) as possible: clusters are spread about their centre."""
+    out = list(positions)
+    for _ in range(len(out) * 4):
+        moved = False
+        for i in range(1, len(out)):
+            gap = out[i] - out[i - 1]
+            if gap < pitch - 1e-9:
+                push = (pitch - gap) / 2.0
+                out[i - 1] -= push
+                out[i] += push
+                moved = True
+        if not moved:
+            break
+    return out
+
+
+def _ordinate(pv: _Projected, dim: _Dimension, look_at: bd.Vector, decimals: int) -> dict[str, Any]:
+    view = pv.view
+    origin2 = _model_2d(view, look_at, dim.points[0])
+    o = pv.to_sheet(*origin2)
+    x0, y0, x1, y1 = pv.frame()
+    horizontal = dim.axis == "horizontal"
+    off = dim.offset
+    places = decimals if dim.decimals is None else dim.decimals
+    items: list[dict[str, Any]] = []
+    seen: list[float] = []
+    entries = [(dim.points[0], "0")] + list(zip(dim.points[1:], dim.labels))
+    for point, label in entries:
+        u, v = _model_2d(view, look_at, point)
+        value = (u - origin2[0]) if horizontal else (v - origin2[1])
+        if any(abs(value - s) < 1e-6 for s in seen):
+            continue  # one value per distinct position
+        seen.append(value)
+        items.append({
+            "value": value,
+            "text": label if label is not None else ("0" if abs(value) < 1e-9 else _fmt(abs(value), places)),
+            "at": pv.to_sheet(u, v),
+        })
+    if horizontal:
+        base = (y1 + off) if off > 0 else (y0 + off)
+        sign = 1.0 if off > 0 else -1.0  # direction from the view to the baseline
+        items.sort(key=lambda it: it["at"][0])
+        texts = _spread([it["at"][0] for it in items], ORDINATE_TEXT_PITCH_MM)
+        for it, t in zip(items, texts):
+            px, py = it["at"]
+            start = (px, py + sign * EXTENSION_GAP_MM)
+            knee = (px, base - sign * ORDINATE_JOG_MM)
+            end = (t, base)
+            path = [start, knee, end] if abs(t - px) > 1e-6 else [start, end]
+            it["path"] = [list(p) for p in path]
+            it["text_at"] = [t, base + sign * 1.0]
+            it["text_angle"] = 90.0
+            it["text_align"] = "left" if sign > 0 else "right"
+    else:
+        base = (x1 + off) if off > 0 else (x0 + off)
+        sign = 1.0 if off > 0 else -1.0
+        items.sort(key=lambda it: it["at"][1])
+        texts = _spread([it["at"][1] for it in items], ORDINATE_TEXT_PITCH_MM)
+        for it, t in zip(items, texts):
+            px, py = it["at"]
+            start = (px + sign * EXTENSION_GAP_MM, py)
+            knee = (base - sign * ORDINATE_JOG_MM, py)
+            end = (base, t)
+            path = [start, knee, end] if abs(t - py) > 1e-6 else [start, end]
+            it["path"] = [list(p) for p in path]
+            it["text_at"] = [base + sign * 1.0, t]
+            it["text_angle"] = 0.0
+            it["text_align"] = "left" if sign > 0 else "right"
+    for it in items:
+        it.pop("at")
+    return {
+        "kind": "ordinate",
+        "axis": dim.axis,
+        "view": view.label,
+        "origin": list(o),
+        "values": [it["value"] for it in items],
+        "text": ", ".join(it["text"] for it in items),
+        "items": items,
+    }
+
+
+def _angle(pv: _Projected, dim: _Dimension, look_at: bd.Vector, decimals: int) -> dict[str, Any]:
+    view = pv.view
+    vertex, p1, p2 = dim.points
+    a3, b3 = p1 - vertex, p2 - vertex
+    if a3.length < 1e-9 or b3.length < 1e-9:
+        raise DrawingError("angle points must differ from the vertex")
+    for ray in (a3, b3):
+        if abs(ray.normalized().dot(view.toward)) > 1e-4:
+            raise DrawingError(
+                f"angle lines are not in the plane of view {view.label!r}; dimension it where it is seen true"
+            )
+    value = float(a3.get_angle(b3))  # build123d returns degrees
+    v = pv.to_sheet(*_model_2d(view, look_at, vertex))
+    a = pv.to_sheet(*_model_2d(view, look_at, p1))
+    b = pv.to_sheet(*_model_2d(view, look_at, p2))
+    ta = math.atan2(a[1] - v[1], a[0] - v[0])
+    tb = math.atan2(b[1] - v[1], b[0] - v[0])
+    sweep = (tb - ta + math.pi) % (2 * math.pi) - math.pi  # the smaller turn, signed
+    r = dim.arc_radius
+    arc = [
+        [v[0] + r * math.cos(ta + sweep * i / 24), v[1] + r * math.sin(ta + sweep * i / 24)]
+        for i in range(25)
+    ]
+    extensions = []
+    for end, theta in ((a, ta), (b, tb)):
+        reach = math.hypot(end[0] - v[0], end[1] - v[1])
+        if reach < r:
+            # A ray shorter than the arc is a reference direction, not an
+            # edge reaching the arc: draw it from the vertex out past the arc.
+            ux, uy = math.cos(theta), math.sin(theta)
+            extensions.append([
+                [v[0] + ux * EXTENSION_GAP_MM, v[1] + uy * EXTENSION_GAP_MM],
+                [v[0] + ux * (r + EXTENSION_OVERSHOOT_MM), v[1] + uy * (r + EXTENSION_OVERSHOOT_MM)],
+            ])
+    mid = ta + sweep / 2.0
+    text = dim.text if dim.text is not None else (
+        f"{dim.prefix}{_fmt(value, dim.decimals if dim.decimals is not None else max(decimals - 1, 0) or 1)}\u00b0{dim.suffix}")
+    return {
+        "kind": "angle",
+        "view": view.label,
+        "value": value,
+        "text": text,
+        "arc": arc,
+        "extensions": extensions,
+        "text_at": [v[0] + (r + 2.5) * math.cos(mid), v[1] + (r + 2.5) * math.sin(mid)],
+        "text_align": "left" if math.cos(mid) >= 0 else "right",
+    }
+
+
 def _circular(pv: _Projected, dim: _Dimension, look_at: bd.Vector, decimals: int) -> dict[str, Any]:
     view = pv.view
     assert dim.circle is not None
@@ -640,6 +840,10 @@ def project_drawing(drawing: Drawing) -> dict[str, Any]:
         for dim in view.dimensions:
             if dim.kind == "linear":
                 dims_out.append(_linear(pv, dim, look_at, drawing.decimals))
+            elif dim.kind == "ordinate":
+                dims_out.append(_ordinate(pv, dim, look_at, drawing.decimals))
+            elif dim.kind == "angle":
+                dims_out.append(_angle(pv, dim, look_at, drawing.decimals))
             else:
                 dims_out.append(_circular(pv, dim, look_at, drawing.decimals))
     title_block = dict(drawing.title_block)

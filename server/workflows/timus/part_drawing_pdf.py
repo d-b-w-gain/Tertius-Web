@@ -293,6 +293,23 @@ def _dimensions(s: _Sheet, doc: dict[str, Any]) -> None:
             # Text sits just above the dimension line (left of it when vertical).
             nx, ny = -math.sin(math.radians(angle)), math.cos(math.radians(angle))
             s.text(tx + nx * TEXT_GAP, ty + ny * TEXT_GAP, text, angle=angle, align=align)
+        elif dim["kind"] == "ordinate":
+            ox, oy = dim["origin"]
+            s.circle([ox, oy], 0.8)  # the datum
+            for item in dim.get("items", []):
+                s.polyline(item["path"])
+                tx, ty = item["text_at"]
+                s.text(tx, ty, _latin(str(item["text"])), angle=float(item.get("text_angle", 0.0)),
+                       align=item.get("text_align", "left"), valign="middle")
+        elif dim["kind"] == "angle":
+            for ext in dim.get("extensions", []):
+                s.line(ext[0], ext[1])
+            arc = dim["arc"]
+            s.polyline(arc)
+            s.arrow(arc[0], (arc[0][0] - arc[1][0], arc[0][1] - arc[1][1]))
+            s.arrow(arc[-1], (arc[-1][0] - arc[-2][0], arc[-1][1] - arc[-2][1]))
+            tx, ty = dim["text_at"]
+            s.text(tx, ty, text, align=dim.get("text_align", "left"), valign="middle")
         else:
             tip, elbow, end = dim["leader"]
             s.line(tip, elbow)

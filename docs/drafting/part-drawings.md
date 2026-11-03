@@ -37,7 +37,12 @@ front.horizontal((0, 0, 0), (50, 0, 0), offset=-10)
   angle: right view to the right, top view above), 25 mm clear unless `at=`
   gives the free coordinate. Hidden lines: `hidden=True`.
 * **Dimensions** (on a view): `horizontal`, `vertical`, `aligned`,
-  `linear(axis="auto")`, `diameter`, `radius`. Points are model-space
+  `linear(axis="auto")`, `diameter`, `radius`, `angle(vertex, p1, p2,
+  radius=)` (seen true in the view; a short ray is drawn as a reference line
+  from the vertex), and `ordinate(origin, points, axis=, offset=)`: every
+  point's distance from a datum, one value per position on a common baseline,
+  jogged apart where values are too close to read. Ordinates are the way to
+  locate many holes and corners from one datum without a stack of dimensions. Points are model-space
   `(x, y, z)` tuples, Vectors or Vertices; circles are a circular `bd.Edge`
   or `center=` + `diameter=`/`radius=` (+ `normal=`, default the view
   direction). Values are measured from the model, formatted to `decimals`
@@ -79,6 +84,6 @@ build is unaffected.
 
 ## Not yet
 
-Section views and hatching, detail views, ordinate dimensions and hole
-tables, angular dimensions, dimensions recorded while modelling (imported into
+Section views and hatching, detail views, hole tables, dimensions recorded
+while modelling (imported into
 views automatically), and showing the sheets in the drafting workbench UI.
