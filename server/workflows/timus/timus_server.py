@@ -895,6 +895,119 @@ def get_project_bounds(
         return Response(f"Internal Server Error: {str(e)}", status_code=500)
 
 
+def _load_current_timus_views(name: str, ctx: AuthContext, db: Session) -> dict[str, Any] | Response:
+    """The latest drafting build's output for this project, or an error response.
+
+    Same rules as the drafting PDF: the build must be newer than design.py,
+    otherwise the caller gets 409 and should POST drafting/build first."""
+    project = ProjectRepository(db, ctx.tenant_id).get_project(name)
+    if project is None:
+        return Response("Project not found", status_code=404)
+    design_file = _get_project_design_file(name, ctx, db)
+    if design_file is None:
+        return Response("Project not found", status_code=404)
+    latest_artifact = db.scalar(
+        select(Artifact).where(
+            Artifact.tenant_id == ctx.tenant_id,
+            Artifact.project_id == project.id,
+            Artifact.kind == "timus_views",
+        ).order_by(desc(Artifact.created_at))
+    )
+    if latest_artifact is None or not _artifact_is_current_for_design(latest_artifact, design_file):
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "error": "PDF Data is not ready",
+                "user_message": "Build the drafting data (POST drafting/build) before requesting drawings.",
+            },
+        )
+    if latest_artifact.content is None:
+        return Response("No drafting views found", status_code=404)
+    return json.loads(latest_artifact.content.decode("utf-8"))
+
+
+def _find_part_drawing(views: dict[str, Any], drawing: str) -> dict[str, Any] | Response:
+    for doc in views.get("drawings", []) or []:
+        if doc.get("name") == drawing:
+            if doc.get("error"):
+                return JSONResponse(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    content={"error": doc["error"], "drawing": drawing},
+                )
+            return doc
+    return JSONResponse(
+        status_code=status.HTTP_404_NOT_FOUND,
+        content={
+            "error": f"drawing {drawing!r} not found",
+            "drawings": [d.get("name") for d in views.get("drawings", []) or []],
+        },
+    )
+
+
+@app.get("/projects/{name}/drawings")
+def list_part_drawings(
+    name: str,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    """Part drawings declared in design.py (tertius.drawing.Drawing) in the
+    latest drafting build."""
+    views = _load_current_timus_views(name, ctx, db)
+    if isinstance(views, Response):
+        return views
+    listed = []
+    for doc in views.get("drawings", []) or []:
+        tb = doc.get("title_block", {}) or {}
+        listed.append({
+            "name": doc.get("name"),
+            "title": tb.get("title"),
+            "number": tb.get("number"),
+            "sheet": (doc.get("sheet") or {}).get("size"),
+            "views": [v.get("label") for v in doc.get("views", [])],
+            "dimensions": len(doc.get("dimensions", [])),
+            "error": doc.get("error"),
+        })
+    return {"drawings": listed}
+
+
+@app.get("/projects/{name}/drawings/{drawing}.json")
+def get_part_drawing_json(
+    name: str,
+    drawing: str,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    """The resolved drawing: views in sheet mm and every dimension's value."""
+    views = _load_current_timus_views(name, ctx, db)
+    if isinstance(views, Response):
+        return views
+    return _find_part_drawing(views, drawing)
+
+
+@app.get("/projects/{name}/drawings/{drawing}.pdf")
+def get_part_drawing_pdf(
+    name: str,
+    drawing: str,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    """One part drawing as a PDF sheet."""
+    views = _load_current_timus_views(name, ctx, db)
+    if isinstance(views, Response):
+        return views
+    doc = _find_part_drawing(views, drawing)
+    if isinstance(doc, Response):
+        return doc
+    from workflows.timus.part_drawing_pdf import render_part_drawing_pdf
+
+    pdf_bytes = render_part_drawing_pdf(doc)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"inline; filename=\"{drawing}.pdf\""},
+    )
+
+
 @app.get("/projects/{name}/drafting.pdf")
 def get_drafting_pdf(
     name: str, 
