@@ -20,6 +20,10 @@ import {
 } from './DraftingWorkspaceChrome';
 import {
   buildDraftingPdfUrl,
+  buildPartDrawingPdfUrl,
+  buildPartDrawingsUrl,
+  parsePartDrawings,
+  type PartDrawingSummary,
   formatDraftingScale,
   getDraftingViewLayout,
   type DraftingLayout,
@@ -113,6 +117,7 @@ const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [buildStatus, setBuildStatus] = useState<string>('none');
   const [buildMessage, setBuildMessage] = useState<string>('');
+  const [partDrawings, setPartDrawings] = useState<PartDrawingSummary[]>([]);
   const [navigatorOpen, setNavigatorOpen] = useState(() => readStoredBoolean(NAVIGATOR_STORAGE_KEY, false));
   const [inspectorOpen, setInspectorOpen] = useState(() => readStoredBoolean(INSPECTOR_STORAGE_KEY, true));
   const [navigatorWidth, setNavigatorWidth] = useState(() =>
@@ -319,6 +324,49 @@ const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean
     return () => { mounted = false; clearInterval(interval); };
   }, [activeProject, isActive, serverUrl, getAccessToken]);
 
+  // Part drawings declared in design.py come with each ready drafting build.
+  useEffect(() => {
+    if (!activeProject || !isActive || buildStatus !== 'ready') {
+      setPartDrawings([]);
+      return;
+    }
+    let mounted = true;
+    (async () => {
+      try {
+        const res = await apiFetch(buildPartDrawingsUrl(serverUrl, activeProject), getAccessToken);
+        const data = res.ok ? await res.json() : null;
+        if (mounted) setPartDrawings(parsePartDrawings(data));
+      } catch {
+        if (mounted) setPartDrawings([]);
+      }
+    })();
+    return () => { mounted = false; };
+  }, [activeProject, isActive, buildStatus, serverUrl, getAccessToken]);
+
+  const handleOpenPartDrawing = async (drawing: string) => {
+    if (!activeProject || buildStatus !== 'ready') return;
+    await runWithInteractionSpan('artifact_download', {
+      workflow: 'timus',
+      artifact_type: 'part_drawing_pdf',
+    }, async () => {
+      try {
+        const res = await apiFetch(buildPartDrawingPdfUrl(serverUrl, activeProject, drawing), getAccessToken);
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          if (res.status === 409) setBuildStatus('stale');
+          setBuildMessage(data.user_message || data.error || `Part drawing ${drawing} could not be opened.`);
+          return;
+        }
+        const blob = await res.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        window.open(objectUrl, '_blank', 'noopener,noreferrer');
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+      } catch (e) {
+        console.error('Failed to open part drawing:', e);
+      }
+    });
+  };
+
   const triggerBuild = async () => {
     if (!activeProject) return;
     setBuildStatus('building');
@@ -409,6 +457,8 @@ const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean
               selectedView={selectedView}
               onSelectView={setSelectedView}
               onClose={closeNavigator}
+              partDrawings={partDrawings}
+              onOpenPartDrawing={handleOpenPartDrawing}
             />
             <div
               role="separator"

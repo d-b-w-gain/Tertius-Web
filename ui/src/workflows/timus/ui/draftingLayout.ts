@@ -51,3 +51,44 @@ export const buildDraftingPdfUrl = (
   return `${serverUrl}/projects/${encodeURIComponent(activeProject)}/drafting.pdf?${params.toString()}`;
 };
 
+
+/** A part drawing declared in design.py (tertius.drawing), as listed by Timus. */
+export interface PartDrawingSummary {
+  name: string;
+  title: string | null;
+  number: string | null;
+  sheet: string | null;
+  views: string[];
+  dimensions: number;
+  error: string | null;
+}
+
+export const buildPartDrawingsUrl = (serverUrl: string, activeProject: string): string =>
+  `${serverUrl}/projects/${encodeURIComponent(activeProject)}/drawings`;
+
+export const buildPartDrawingPdfUrl = (serverUrl: string, activeProject: string, drawing: string): string =>
+  `${buildPartDrawingsUrl(serverUrl, activeProject)}/${encodeURIComponent(drawing)}.pdf`;
+
+const textOrNull = (value: unknown): string | null =>
+  typeof value === 'string' && value.trim() !== '' ? value : null;
+
+/** The drawings list from GET /drawings, tolerating missing or partial data. */
+export const parsePartDrawings = (data: unknown): PartDrawingSummary[] => {
+  const items = (data as { drawings?: unknown } | null)?.drawings;
+  if (!Array.isArray(items)) return [];
+  return items.flatMap((item): PartDrawingSummary[] => {
+    if (typeof item !== 'object' || item === null) return [];
+    const record = item as Record<string, unknown>;
+    const name = textOrNull(record.name);
+    if (!name) return [];
+    return [{
+      name,
+      title: textOrNull(record.title),
+      number: textOrNull(record.number),
+      sheet: textOrNull(record.sheet),
+      views: Array.isArray(record.views) ? record.views.filter((v): v is string => typeof v === 'string') : [],
+      dimensions: typeof record.dimensions === 'number' ? record.dimensions : 0,
+      error: textOrNull(record.error),
+    }];
+  });
+};
