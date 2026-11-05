@@ -1,6 +1,7 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { useAuth } from '../../auth/AuthProvider'
 import { useServerLauncher } from './ui/ServerLauncher/useServerLauncher'
+import { ShareProjectDialog } from './ui/ShareProjectDialog'
 import { LatestModelViewer, ModelViewerCanvas } from './ui/ViewerTab'
 import type { ComponentPreviewImage } from '../shared/componentPreview'
 
@@ -21,8 +22,11 @@ export const SharedExtusViewport: React.FC<{
   source: SharedExtusViewportSource
   externalSelectedNodeIds?: string[]
   onExternalSelectionPreviewChange?: (preview: ComponentPreviewImage | null) => void
-}> = ({ isActive, source, externalSelectedNodeIds, onExternalSelectionPreviewChange }) => {
+  /** Offer a Share button for the active project's latest model (#417). */
+  shareEnabled?: boolean
+}> = ({ isActive, source, externalSelectedNodeIds, onExternalSelectionPreviewChange, shareEnabled = false }) => {
   const { getAccessToken } = useAuth()
+  const [isShareOpen, setIsShareOpen] = useState(false)
   const server = useServerLauncher({
     workflowFolder: 'tertius/extus',
     scriptName: 'extus_server.py',
@@ -47,12 +51,22 @@ export const SharedExtusViewport: React.FC<{
   }
 
   return (
-    <LatestModelViewer
-      serverUrl={server.serverUrl}
-      isActive={isActive}
-      statusTextOverride={source.statusTextOverride}
-      externalSelectedNodeIds={externalSelectedNodeIds}
-      onExternalSelectionPreviewChange={onExternalSelectionPreviewChange}
-    />
+    <>
+      <LatestModelViewer
+        serverUrl={server.serverUrl}
+        isActive={isActive}
+        statusTextOverride={source.statusTextOverride}
+        externalSelectedNodeIds={externalSelectedNodeIds}
+        onExternalSelectionPreviewChange={onExternalSelectionPreviewChange}
+        onShare={shareEnabled ? () => setIsShareOpen(true) : undefined}
+      />
+      {shareEnabled && isShareOpen && (
+        <ShareProjectDialog
+          serverUrl={server.serverUrl}
+          getAccessToken={getAccessToken}
+          onClose={() => setIsShareOpen(false)}
+        />
+      )}
+    </>
   )
 }

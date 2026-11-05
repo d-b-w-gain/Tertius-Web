@@ -50,7 +50,7 @@ export function WorkbenchHost({ activeTab, authMode, canUseSiteWorkbench, canUse
   return (
     <div ref={workbenchRef} className="flex-1 relative flex flex-col min-h-0 bg-slate-950">
       {usesSharedExtusViewport && <div className={sharedViewportFrameClass} style={sharedViewportFrameStyle}>
-        <SharedExtusViewport isActive={usesSharedExtusViewport} source={sharedExtusViewportSource} externalSelectedNodeIds={activeTab === 'octavus' ? procurementSelectedVisualNodeIds : undefined} onExternalSelectionPreviewChange={activeTab === 'octavus' ? setProcurementComponentPreview : undefined} />
+        <SharedExtusViewport isActive={usesSharedExtusViewport} source={sharedExtusViewportSource} externalSelectedNodeIds={activeTab === 'octavus' ? procurementSelectedVisualNodeIds : undefined} onExternalSelectionPreviewChange={activeTab === 'octavus' ? setProcurementComponentPreview : undefined} shareEnabled={activeTab === 'extus' && authMode === 'authenticated'} />
       </div>}
       <div className={activeTab === 'generate' ? 'absolute inset-0 flex flex-col' : 'hidden'}>
         <GenerateDesignWindow isActive={activeTab === 'generate'} renderViewport={false} onViewportStateChange={setGenerateViewportState} />

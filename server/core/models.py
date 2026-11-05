@@ -491,6 +491,28 @@ class SceneAsset(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
 
 
+class ProjectShare(Base):
+    """A public read-only link to one project in one workbench (#417).
+
+    The link's token is derived from the row's id (see ``core.share_links``),
+    so no token is stored; revoking sets ``revoked_at``."""
+
+    __tablename__ = "project_shares"
+    __table_args__ = (
+        ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="CASCADE"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    workbench: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_by: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("app_users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class TimusSettings(Base):
     __tablename__ = "timus_settings"
     __table_args__ = (

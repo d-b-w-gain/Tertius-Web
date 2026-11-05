@@ -10,7 +10,7 @@ from threading import RLock
 from typing import Any
 from uuid import UUID
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy import select
@@ -18,11 +18,19 @@ from sqlalchemy.orm import Session, load_only
 
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
+from core.config import get_settings
 from core.db import get_db
 from core.gltf_geometry import model_site_dimensions
-from core.models import Artifact, Project, UserWorkspaceState
+from core.models import Artifact, Project, ProjectShare, UserWorkspaceState, now_utc
 from core.repositories import CompileRepository
 from core.scene_manifest import ASSET_ID
+from core.share_links import (
+    EXTUS_WORKBENCH,
+    SHARE_TOKEN_HEADER,
+    ShareLinksUnavailable,
+    share_id_from_token,
+    share_token,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,10 +113,15 @@ def get_latest_model_artifact(db: Session, ctx: AuthContext, *, include_content:
     project = get_active_project(db, ctx)
     if project is None:
         return None
+    return latest_project_model(db, project, include_content=include_content)
+
+
+def latest_project_model(db: Session, project: Project, *, include_content: bool = True) -> Artifact | None:
+    """The project's latest compiled model, signed-in or shared."""
     query = (
         select(Artifact)
         .where(
-            Artifact.tenant_id == ctx.tenant_id,
+            Artifact.tenant_id == project.tenant_id,
             Artifact.project_id == project.id,
             Artifact.kind.in_(["gltf", "glb", "stl"]),
         )
@@ -290,23 +303,20 @@ def get_procurement_analysis(
     return get_procurement(ctx=ctx, db=db)
 
 
-@app.get("/scene")
-def get_scene(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
-    """The per-component scene manifest (#314) of the latest model, if that
-    compile published one; 404 means load the monolithic model instead."""
-    model_artifact = get_latest_model_artifact(db, ctx, include_content=False)
+def _latest_scene(db: Session, model_artifact: Artifact | None) -> dict[str, Any] | None:
+    """The per-component scene (#314) of a model, if its compile published one."""
     if model_artifact is None or model_artifact.compile_job_id is None:
-        return JSONResponse(status_code=404, content={"error": "Scene not found"})
+        return None
     scene_artifact = db.scalar(
         select(Artifact).where(
-            Artifact.tenant_id == ctx.tenant_id,
+            Artifact.tenant_id == model_artifact.tenant_id,
             Artifact.project_id == model_artifact.project_id,
             Artifact.compile_job_id == model_artifact.compile_job_id,
             Artifact.kind == "scene",
         )
     )
     if scene_artifact is None or scene_artifact.content is None:
-        return JSONResponse(status_code=404, content={"error": "Scene not found"})
+        return None
     manifest = json.loads(scene_artifact.content.decode("utf-8"))
     manifest.pop("asset_refs", None)        # transport detail
     return {
@@ -316,6 +326,29 @@ def get_scene(ctx: AuthContext = Depends(get_auth_context), db: Session = Depend
     }
 
 
+def _scene_asset_response(db: Session, tenant_id: UUID, asset_id: str, cache: str) -> Response:
+    if not ASSET_ID.match(asset_id):
+        return JSONResponse(status_code=404, content={"error": "Scene asset not found"})
+    asset = CompileRepository(db, tenant_id).get_scene_asset(asset_id)
+    if asset is None:
+        return JSONResponse(status_code=404, content={"error": "Scene asset not found"})
+    return Response(
+        content=asset.content,
+        media_type="model/gltf-binary",
+        headers={"Cache-Control": f"{cache}, max-age=31536000, immutable", "ETag": f'"{asset.sha256}"'},
+    )
+
+
+@app.get("/scene")
+def get_scene(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+    """The per-component scene manifest (#314) of the latest model, if that
+    compile published one; 404 means load the monolithic model instead."""
+    scene = _latest_scene(db, get_latest_model_artifact(db, ctx, include_content=False))
+    if scene is None:
+        return JSONResponse(status_code=404, content={"error": "Scene not found"})
+    return scene
+
+
 @app.get("/scene-assets/{asset_id}")
 def get_scene_asset(
     asset_id: str,
@@ -323,19 +356,7 @@ def get_scene_asset(
     db: Session = Depends(get_db),
 ):
     """One immutable scene asset: its ID names its content, so browsers keep it."""
-    if not ASSET_ID.match(asset_id):
-        return JSONResponse(status_code=404, content={"error": "Scene asset not found"})
-    asset = CompileRepository(db, ctx.tenant_id).get_scene_asset(asset_id)
-    if asset is None:
-        return JSONResponse(status_code=404, content={"error": "Scene asset not found"})
-    return Response(
-        content=asset.content,
-        media_type="model/gltf-binary",
-        headers={
-            "Cache-Control": "private, max-age=31536000, immutable",
-            "ETag": f'"{asset.sha256}"',
-        },
-    )
+    return _scene_asset_response(db, ctx.tenant_id, asset_id, "private")
 
 
 @app.get("/artifacts/{artifact_id}/model")
@@ -348,6 +369,155 @@ def get_model_by_artifact_id(
     if artifact is None or artifact.content is None:
         return JSONResponse(status_code=404, content={"error": "File not found"})
     return Response(content=artifact.content, media_type=artifact.content_type)
+
+# --- Share links (#417) --------------------------------------------------
+# The owner makes read-only links to the active project; anyone holding one
+# reads that project's latest model through the /shared routes, which take
+# the token from SHARE_TOKEN_HEADER and answer 404 for anything else.
+
+_NO_STORE = {"Cache-Control": "no-store"}
+
+
+def _share_payload(share: ProjectShare) -> dict[str, Any]:
+    return {
+        "id": str(share.id),
+        "token": share_token(share.id, get_settings()),
+        "workbench": share.workbench,
+        "created_at": share.created_at.isoformat(),
+    }
+
+
+def _share_links_unavailable() -> JSONResponse:
+    return JSONResponse(status_code=503, content={"error": "Share links are not configured"})
+
+
+@app.get("/shares")
+def list_shares(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+    """The active project's live share links, newest first."""
+    project = get_active_project(db, ctx)
+    if project is None:
+        return {"project_name": "", "shares": []}
+    shares = db.scalars(
+        select(ProjectShare)
+        .where(
+            ProjectShare.tenant_id == ctx.tenant_id,
+            ProjectShare.project_id == project.id,
+            ProjectShare.workbench == EXTUS_WORKBENCH,
+            ProjectShare.revoked_at.is_(None),
+        )
+        .order_by(ProjectShare.created_at.desc())
+    ).all()
+    try:
+        return {"project_name": project.name, "shares": [_share_payload(share) for share in shares]}
+    except ShareLinksUnavailable:
+        return _share_links_unavailable()
+
+
+@app.post("/shares", status_code=201)
+def create_share(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+    """A new read-only Extus link to the active project."""
+    project = get_active_project(db, ctx)
+    if project is None:
+        return JSONResponse(status_code=404, content={"error": "No active project to share"})
+    share = ProjectShare(
+        tenant_id=ctx.tenant_id,
+        project_id=project.id,
+        workbench=EXTUS_WORKBENCH,
+        created_by=ctx.user_id,
+    )
+    db.add(share)
+    db.flush()
+    try:
+        payload = _share_payload(share)
+    except ShareLinksUnavailable:
+        db.rollback()
+        return _share_links_unavailable()
+    db.commit()
+    return payload
+
+
+@app.delete("/shares/{share_id}")
+def revoke_share(share_id: UUID, ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+    share = db.scalar(
+        select(ProjectShare).where(
+            ProjectShare.id == share_id,
+            ProjectShare.tenant_id == ctx.tenant_id,
+            ProjectShare.revoked_at.is_(None),
+        )
+    )
+    if share is None:
+        return JSONResponse(status_code=404, content={"error": "Share link not found"})
+    share.revoked_at = now_utc()
+    db.commit()
+    return {"revoked": True}
+
+
+def get_shared_project(request: Request, db: Session = Depends(get_db)) -> Project:
+    """The project a share token opens, or 404: an unknown, forged or revoked
+    token looks the same as a deleted project."""
+    not_found = HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share link not found")
+    try:
+        share_id = share_id_from_token(request.headers.get(SHARE_TOKEN_HEADER), get_settings())
+    except ShareLinksUnavailable:
+        raise not_found from None
+    if share_id is None:
+        raise not_found
+    share = db.get(ProjectShare, share_id)
+    if share is None or share.revoked_at is not None or share.workbench != EXTUS_WORKBENCH:
+        raise not_found
+    project = db.scalar(
+        select(Project).where(Project.id == share.project_id, Project.tenant_id == share.tenant_id)
+    )
+    if project is None:
+        raise not_found
+    return project
+
+
+@app.get("/shared/project_name")
+def get_shared_project_name(project: Project = Depends(get_shared_project)):
+    return JSONResponse(content={"project_name": project.name}, headers=_NO_STORE)
+
+
+@app.get("/shared/status")
+def get_shared_status(project: Project = Depends(get_shared_project), db: Session = Depends(get_db)):
+    artifact = latest_project_model(db, project, include_content=False)
+    if artifact is None:
+        return JSONResponse(status_code=404, content={"error": "File not found"}, headers=_NO_STORE)
+    return JSONResponse(
+        content={"mtime": artifact.created_at.timestamp(), "model_artifact_id": str(artifact.id)},
+        headers=_NO_STORE,
+    )
+
+
+@app.get("/shared/model")
+def get_shared_model(project: Project = Depends(get_shared_project), db: Session = Depends(get_db)):
+    artifact = latest_project_model(db, project)
+    if artifact is None or artifact.content is None:
+        return JSONResponse(status_code=404, content={"error": "File not found"}, headers=_NO_STORE)
+    return Response(content=artifact.content, media_type=artifact.content_type, headers=_NO_STORE)
+
+
+@app.get("/shared/scene")
+def get_shared_scene(project: Project = Depends(get_shared_project), db: Session = Depends(get_db)):
+    scene = _latest_scene(db, latest_project_model(db, project, include_content=False))
+    if scene is None:
+        return JSONResponse(status_code=404, content={"error": "Scene not found"}, headers=_NO_STORE)
+    return JSONResponse(content=scene, headers=_NO_STORE)
+
+
+@app.get("/shared/scene-assets/{asset_id}")
+def get_shared_scene_asset(
+    asset_id: str,
+    project: Project = Depends(get_shared_project),
+    db: Session = Depends(get_db),
+):
+    """A scene asset, only if the shared project's current scene uses it:
+    asset ids are tenant-wide, and a link must not open other projects'."""
+    scene = _latest_scene(db, latest_project_model(db, project, include_content=False))
+    if scene is None or asset_id not in (scene["manifest"].get("assets") or []):
+        return JSONResponse(status_code=404, content={"error": "Scene asset not found"})
+    return _scene_asset_response(db, project.tenant_id, asset_id, "private")
+
 
 if __name__ == "__main__":
     import uvicorn
