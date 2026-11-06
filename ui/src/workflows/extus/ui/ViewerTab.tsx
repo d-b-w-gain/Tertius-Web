@@ -104,6 +104,23 @@ interface ModelViewerCanvasProps {
   onShare?: () => void;
 }
 
+/**
+ * Centre a loaded model on the grid in plan, keeping its real height: its
+ * Z = 0 (the design datum) stays on the grid. The model's rotation (the glTF
+ * Y-up turn) must be set first; its position is in the parent's axes, so the
+ * centre is measured there. Returns the model's bounds after the shift.
+ */
+export function centreModelInPlan(model: THREE.Object3D): THREE.Box3 {
+  model.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(model);
+  if (box.isEmpty()) return box;
+  const centre = box.getCenter(new THREE.Vector3());
+  const shift = new THREE.Vector3(-centre.x, -centre.y, 0);
+  model.position.add(shift);
+  model.updateMatrixWorld(true);
+  return box.translate(shift);
+}
+
 export function structuralCheckColor(
   status: StructuralViewerOverlay['status'],
 ): number {
@@ -801,29 +818,15 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       if (!isCurrentRequest()) return;
       if (gltfJson) annotateGltfNodeIds(model, gltfJson, gltfAssociations);
 
-      // Compute bounding box and center
-      const box = new THREE.Box3().setFromObject(model);
-      const center = new THREE.Vector3();
-      box.getCenter(center);
-      model.position.sub(center);
-
-      // GLTF is Y-up; STL emitted by the CAD compiler is already Z-up.
+      // GLTF is Y-up; STL emitted by the CAD compiler is already Z-up. Turn
+      // the model first so its bounds below are in the viewer's Z-up axes.
       if (isGltf) model.rotation.x = Math.PI / 2;
+      const box = centreModelInPlan(model);
 
       // Update camera
       if (cameraRef.current) {
-         const camera = cameraRef.current;
          const sphere = box.getBoundingSphere(new THREE.Sphere());
-         const fov = camera.fov * (Math.PI / 180);
-         let distance = Math.abs(sphere.radius / Math.sin(fov / 2));
-         distance *= 1.5; // Padding
-
-         const currentDir = new THREE.Vector3().subVectors(camera.position, new THREE.Vector3(0,0,0)).normalize();
-         if (currentDir.lengthSq() === 0) currentDir.set(1, 1, 1).normalize();
-
-         camera.position.copy(currentDir.multiplyScalar(distance));
-         camera.lookAt(0, 0, 0);
-         camera.updateProjectionMatrix();
+         frameCameraOnBox(box, 1.5);
 
          // Update helpers
          const size = Math.max(500, Math.ceil(sphere.radius * 4));
@@ -1077,7 +1080,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         loadSpanEnded = true;
       }
     };
-  }, [modelUrl, getAccessToken, clearCurrentModel, isActive]);
+  }, [modelUrl, getAccessToken, clearCurrentModel, isActive, frameCameraOnBox]);
 
   const externalSelectionKey = externalSelectedNodeIds?.join('\u001f') || '';
 
