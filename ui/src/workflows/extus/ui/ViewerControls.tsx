@@ -46,6 +46,8 @@ export interface ViewerControlsProps {
   onToggleRenderQuality: () => void;
   onToggleGrid: () => void;
   onToggleAutoRotate: () => void;
+  /** Shows a Share button that opens the project's share links (#417). */
+  onShare?: () => void;
 }
 
 export function ViewerControls({
@@ -67,6 +69,7 @@ export function ViewerControls({
   onToggleRenderQuality,
   onToggleGrid,
   onToggleAutoRotate,
+  onShare,
 }: ViewerControlsProps) {
   const stageFocus = structuralOverlays?.find((overlay) => overlay.stageFocus)?.stageFocus;
 
@@ -120,6 +123,15 @@ export function ViewerControls({
               0,
             )} restraint traces
           </div>
+        ) : null}
+        {onShare ? (
+          <button
+            onClick={onShare}
+            className="pointer-events-auto text-xs font-bold px-2 py-0.5 rounded border border-emerald-600 bg-emerald-700/80 text-white transition-colors hover:bg-emerald-600"
+            title="Make a read-only link to this project's model"
+          >
+            Share
+          </button>
         ) : null}
         <button
           onClick={onFit}

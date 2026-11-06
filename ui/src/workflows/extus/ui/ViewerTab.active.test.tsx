@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   detectModelArtifactFormat,
+  LatestModelViewer,
   ModelViewerCanvas,
   ViewerTab,
   structuralCheckColor,
@@ -342,5 +343,39 @@ describe('ViewerTab active state', () => {
     )
 
     expect(await screen.findByText('Loading model...')).toBeInTheDocument()
+  })
+})
+
+describe('share links (#417)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(640)
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(480)
+    window.requestAnimationFrame = vi.fn(() => 1)
+    window.cancelAnimationFrame = vi.fn()
+    mocks.apiFetch
+      .mockResolvedValueOnce(jsonResponse({ project_name: 'shed' }))
+      .mockResolvedValueOnce(jsonResponse({}, false))
+  })
+
+  it('sends a share token header with the latest-model requests', async () => {
+    const headers = { 'X-Tertius-Share-Token': 'token' }
+    render(<LatestModelViewer serverUrl="/api/extus/shared" requestHeaders={headers} />)
+    await act(async () => {})
+
+    expect(mocks.apiFetch).toHaveBeenCalledWith('/api/extus/shared/project_name', mocks.getAccessToken, { headers })
+    expect(mocks.apiFetch).toHaveBeenCalledWith('/api/extus/shared/status', mocks.getAccessToken, { headers })
+    expect(await screen.findByText('shed')).toBeInTheDocument()
+  })
+
+  it('shows a Share button only when sharing is offered', async () => {
+    const onShare = vi.fn()
+    const { rerender } = render(<LatestModelViewer serverUrl="/api/extus" />)
+    await act(async () => {})
+    expect(screen.queryByRole('button', { name: 'Share' })).not.toBeInTheDocument()
+
+    rerender(<LatestModelViewer serverUrl="/api/extus" onShare={onShare} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Share' }))
+    expect(onShare).toHaveBeenCalledOnce()
   })
 })

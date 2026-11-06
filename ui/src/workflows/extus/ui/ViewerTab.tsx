@@ -82,6 +82,10 @@ interface ViewerProps {
   structuralOverlays?: StructuralViewerOverlay[];
   onStructuralRestraintSelect?: (restraintId: string) => void;
   onExternalSelectionPreviewChange?: (preview: ComponentPreviewImage | null) => void;
+  /** Headers for every model request, e.g. a share link's token (#417). */
+  requestHeaders?: Record<string, string>;
+  /** Shows a Share button in the viewer controls. */
+  onShare?: () => void;
 }
 
 interface ModelViewerCanvasProps {
@@ -94,6 +98,10 @@ interface ModelViewerCanvasProps {
   structuralOverlays?: StructuralViewerOverlay[];
   onStructuralRestraintSelect?: (restraintId: string) => void;
   onExternalSelectionPreviewChange?: (preview: ComponentPreviewImage | null) => void;
+  /** Headers for every model request, e.g. a share link's token (#417). */
+  requestHeaders?: Record<string, string>;
+  /** Shows a Share button in the viewer controls. */
+  onShare?: () => void;
 }
 
 export function structuralCheckColor(
@@ -305,8 +313,14 @@ export const LatestModelViewer: React.FC<ViewerProps> = ({
   structuralOverlays,
   onStructuralRestraintSelect,
   onExternalSelectionPreviewChange,
+  requestHeaders,
+  onShare,
 }) => {
   const { getAccessToken } = useAuth();
+  const requestHeadersRef = useRef(requestHeaders);
+  useEffect(() => {
+    requestHeadersRef.current = requestHeaders;
+  }, [requestHeaders]);
   const [statusText, setStatusText] = useState('Waiting for connection...');
   const [url, setUrl] = useState<string>('');
   const [projectName, setProjectName] = useState<string>('');
@@ -321,7 +335,7 @@ export const LatestModelViewer: React.FC<ViewerProps> = ({
     const checkStatus = async () => {
       if (!shouldRunPollingRequest()) return;
       try {
-        const projRes = await apiFetch(`${serverUrl}/project_name`, getAccessToken);
+        const projRes = await apiFetch(`${serverUrl}/project_name`, getAccessToken, { headers: requestHeadersRef.current });
         if (projRes.ok && mounted) {
           const pData = await projRes.json();
           if (pData.project_name) {
@@ -329,7 +343,7 @@ export const LatestModelViewer: React.FC<ViewerProps> = ({
           }
         }
 
-        const res = await apiFetch(`${serverUrl}/status`, getAccessToken);
+        const res = await apiFetch(`${serverUrl}/status`, getAccessToken, { headers: requestHeadersRef.current });
         if (res.ok) {
           const data = await res.json();
           if (data.mtime && data.mtime !== mtime) {
@@ -367,6 +381,8 @@ export const LatestModelViewer: React.FC<ViewerProps> = ({
       structuralOverlays={structuralOverlays}
       onStructuralRestraintSelect={onStructuralRestraintSelect}
       onExternalSelectionPreviewChange={onExternalSelectionPreviewChange}
+      requestHeaders={requestHeaders}
+      onShare={onShare}
     />
   );
 };
@@ -381,7 +397,13 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   structuralOverlays,
   onStructuralRestraintSelect,
   onExternalSelectionPreviewChange,
+  requestHeaders,
+  onShare,
 }) => {
+  const requestHeadersRef = useRef(requestHeaders);
+  useEffect(() => {
+    requestHeadersRef.current = requestHeaders;
+  }, [requestHeaders]);
   const [showGrid, setShowGrid] = useState<boolean>(true);
   const [autoRotate, setAutoRotate] = useState<boolean>(false);
   const [renderQuality, setRenderQuality] = useState<'high' | 'low'>('high');
@@ -982,13 +1004,13 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     const sceneAssetUrl = (assetId: string) => modelUrl.replace(/\/model(\?.*)?$/, `/scene-assets/${assetId}`);
     const loadScene = async (): Promise<boolean> => {
       try {
-        const res = await apiFetch(sceneUrl, getAccessToken);
+        const res = await apiFetch(sceneUrl, getAccessToken, { headers: requestHeadersRef.current });
         if (!res.ok) return false;
         const body = await res.json();
         if (!isSceneManifest(body?.manifest)) return false;
         const assembled = await assembleScene(body.manifest, {
           fetchAsset: async (assetId) => {
-            const assetRes = await apiFetch(sceneAssetUrl(assetId), getAccessToken);
+            const assetRes = await apiFetch(sceneAssetUrl(assetId), getAccessToken, { headers: requestHeadersRef.current });
             if (!assetRes.ok) throw new Error(`Scene asset unavailable (${assetRes.status || 'HTTP error'})`);
             return assetRes.arrayBuffer();
           },
@@ -1008,7 +1030,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       }
     };
 
-    const loadMonolithic = () => apiFetch(modelUrl, getAccessToken)
+    const loadMonolithic = () => apiFetch(modelUrl, getAccessToken, { headers: requestHeadersRef.current })
       .then(res => {
         if (!res.ok) {
           throw new Error(`Model artifact unavailable (${res.status || 'HTTP error'})`);
@@ -2200,6 +2222,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         onToggleRenderQuality={() => setRenderQuality(renderQuality === 'high' ? 'low' : 'high')}
         onToggleGrid={() => setShowGrid(!showGrid)}
         onToggleAutoRotate={() => setAutoRotate(!autoRotate)}
+        onShare={onShare}
       />
 
       {collisionPanelOpen && (
