@@ -109,4 +109,54 @@ describe('Timus canvas-first workspace', () => {
     expect(screen.queryByLabelText('Drawing properties')).not.toBeInTheDocument();
     expect(screen.getByTestId('drafting-sheet-viewport')).toBeInTheDocument();
   });
+
+  it('lists part drawings from a ready build and opens one as a PDF', async () => {
+    const pdfBlob = new Blob(['%PDF-1.4'], { type: 'application/pdf' });
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null);
+    const createObjectURL = vi.fn(() => 'blob:part-drawing');
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
+    const base = mocks.apiFetch.getMockImplementation();
+    mocks.apiFetch.mockImplementation((url: string, token: unknown, init?: RequestInit) => {
+      if (url.endsWith('/projects/shed/drawings')) {
+        return Promise.resolve(jsonResponse({
+          drawings: [
+            { name: 'Knee_Plate', title: 'Portal knee gusset plate', number: '3X5-PL-KNEE', sheet: 'A3',
+              views: ['FRONT', 'RIGHT', 'ISOMETRIC'], dimensions: 6, error: null },
+            { name: 'Broken', title: 'Broken', number: null, sheet: 'A3', views: [], dimensions: 0,
+              error: 'DrawingError: circle is not seen face-on' },
+          ],
+        }));
+      }
+      if (url.endsWith('/projects/shed/drawings/Knee_Plate.pdf')) {
+        return Promise.resolve({ ok: true, status: 200, blob: vi.fn().mockResolvedValue(pdfBlob) });
+      }
+      return base!(url, token, init);
+    });
+
+    render(<DraftingTab serverUrl="/api/timus" isActive />);
+    await screen.findByTestId('drafting-workspace');
+    fireEvent.click(screen.getByRole('button', { name: 'Show drawing navigator' }));
+
+    const knee = await screen.findByRole('button', { name: 'Open part drawing Knee_Plate' });
+    expect(knee).toHaveTextContent('3X5-PL-KNEE');
+    expect(knee).toHaveTextContent('Portal knee gusset plate');
+    const broken = screen.getByRole('button', { name: 'Open part drawing Broken' });
+    expect(broken).toBeDisabled();
+    expect(broken).toHaveTextContent('circle is not seen face-on');
+
+    fireEvent.click(knee);
+    await waitFor(() => expect(open).toHaveBeenCalledWith('blob:part-drawing', '_blank', 'noopener,noreferrer'));
+    expect(mocks.apiFetch).toHaveBeenCalledWith('/api/timus/projects/shed/drawings/Knee_Plate.pdf', mocks.getAccessToken);
+    expect(createObjectURL).toHaveBeenCalledWith(pdfBlob);
+    open.mockRestore();
+  });
+
+  it('shows no part drawings section when the build has none', async () => {
+    render(<DraftingTab serverUrl="/api/timus" isActive />);
+    await screen.findByTestId('drafting-workspace');
+    fireEvent.click(screen.getByRole('button', { name: 'Show drawing navigator' }));
+    await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledWith('/api/timus/projects/shed/drawings', mocks.getAccessToken));
+    expect(screen.queryByLabelText('Part drawings')).not.toBeInTheDocument();
+  });
 });

@@ -1,6 +1,6 @@
 import type { CSSProperties } from 'react';
 
-import type { DraftingLayout } from './draftingLayout';
+import type { DraftingLayout, PartDrawingSummary } from './draftingLayout';
 
 export type { DraftingLayout } from './draftingLayout';
 
@@ -176,11 +176,15 @@ export function DrawingSetNavigator({
   selectedView,
   onSelectView,
   onClose,
+  partDrawings = [],
+  onOpenPartDrawing,
 }: {
   width: number;
   selectedView: DraftingLayout;
   onSelectView: (layout: DraftingLayout) => void;
   onClose: () => void;
+  partDrawings?: PartDrawingSummary[];
+  onOpenPartDrawing?: (name: string) => void;
 }) {
   const views: DraftingLayout[] = ['combined', 'top', 'front', 'side', 'iso'];
 
@@ -221,6 +225,46 @@ export function DrawingSetNavigator({
             </button>
           ))}
         </div>
+
+        {partDrawings.length > 0 && (
+          <>
+            <div className="mb-2 mt-5 flex items-center justify-between px-2">
+              <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Part drawings</span>
+              <span className="rounded bg-slate-900 px-1.5 py-0.5 text-[9px] uppercase text-slate-500">
+                {partDrawings.length} {partDrawings.length === 1 ? 'sheet' : 'sheets'}
+              </span>
+            </div>
+            <ul className="space-y-1" aria-label="Part drawings">
+              {partDrawings.map((drawing) => (
+                <li key={drawing.name}>
+                  <button
+                    type="button"
+                    aria-label={`Open part drawing ${drawing.name}`}
+                    title={drawing.error ?? `Open ${drawing.number ?? drawing.name} as a PDF`}
+                    disabled={drawing.error !== null || !onOpenPartDrawing}
+                    onClick={() => onOpenPartDrawing?.(drawing.name)}
+                    className="w-full rounded border border-slate-800 bg-slate-900/60 px-3 py-2 text-left transition-colors enabled:hover:border-orange-500/40 enabled:hover:bg-slate-900 disabled:cursor-not-allowed disabled:opacity-70"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate text-xs font-bold text-slate-100">{drawing.number ?? drawing.name}</span>
+                      {drawing.sheet && (
+                        <span className="flex-none text-[9px] uppercase tracking-wider text-slate-500">{drawing.sheet}</span>
+                      )}
+                    </div>
+                    <div className="mt-0.5 truncate text-[11px] text-slate-400">{drawing.title ?? drawing.name}</div>
+                    {drawing.error ? (
+                      <div className="mt-1 text-[10px] leading-snug text-red-300">{drawing.error}</div>
+                    ) : (
+                      <div className="mt-1 text-[10px] text-slate-500">
+                        {drawing.views.join(' · ')}{drawing.views.length > 0 ? ' · ' : ''}{drawing.dimensions} dims · PDF
+                      </div>
+                    )}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
 
         <div className="mt-5 rounded border border-amber-500/25 bg-amber-500/5 p-3 text-[10px] leading-relaxed text-amber-100/70">
           Top view is a projected view, not an architectural floor plan. True cut-plane views arrive in a later epic slice.

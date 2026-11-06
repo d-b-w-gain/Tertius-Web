@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildDraftingPdfUrl,
+  buildPartDrawingPdfUrl,
   formatDraftingScale,
   getDraftingViewLayout,
+  parsePartDrawings,
 } from './draftingLayout';
 
 describe('Timus drafting layout contract', () => {
@@ -48,5 +50,18 @@ describe('Timus drafting layout contract', () => {
     [0.01, '1:100'],
   ])('formats scale %s for the title block', (scale, label) => {
     expect(formatDraftingScale(scale)).toBe(label);
+  });
+
+  it('builds part drawing PDF urls and parses the drawings list defensively', () => {
+    expect(buildPartDrawingPdfUrl('/api/timus', 'shed project', 'Knee Plate')).toBe(
+      '/api/timus/projects/shed%20project/drawings/Knee%20Plate.pdf',
+    );
+    expect(parsePartDrawings(null)).toEqual([]);
+    expect(parsePartDrawings({ drawings: 'nope' })).toEqual([]);
+    expect(parsePartDrawings({
+      drawings: [{ name: 'A', views: ['FRONT', 3], dimensions: 2 }, { title: 'no name' }, 'junk'],
+    })).toEqual([
+      { name: 'A', title: null, number: null, sheet: null, views: ['FRONT'], dimensions: 2, error: null },
+    ]);
   });
 });
