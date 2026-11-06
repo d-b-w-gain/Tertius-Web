@@ -1,4 +1,5 @@
 from .components import ComponentPort, PortPlacement, PortSet, managed_component
+from .drawing import Drawing, DrawingError, project_drawing
 from .connections import (
     ConnectionDefinition,
     ConnectionResistanceDefinition,
@@ -20,6 +21,8 @@ __all__ = [
     "ComponentRefs",
     "ConnectionDefinition",
     "ConnectionResistanceDefinition",
+    "Drawing",
+    "DrawingError",
     "DrawingFacet",
     "PortPlacement",
     "PortSet",
@@ -31,5 +34,6 @@ __all__ = [
     "current_session",
     "managed_component",
     "physical_connection",
+    "project_drawing",
     "refer",
 ]

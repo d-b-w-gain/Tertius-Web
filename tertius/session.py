@@ -48,6 +48,7 @@ class CompileSession:
         self._tokens_by_mark: dict[str, str] = {}
         self._connected_ports: set[tuple[str, str]] = set()
         self._used_connector_tokens: set[str] = set()
+        self._drawings: list[Any] = []
         self._finalized = False
 
     @property
@@ -69,6 +70,17 @@ class CompileSession:
     @property
     def connections(self) -> tuple[ConnectionRegistration, ...]:
         return tuple(self._connections)
+
+    @property
+    def drawings(self) -> tuple[Any, ...]:
+        """Part drawings declared with ``tertius.drawing.Drawing``, in order."""
+        return tuple(self._drawings)
+
+    def register_drawing(self, drawing: Any) -> None:
+        self._ensure_open()
+        if any(existing.name == drawing.name for existing in self._drawings):
+            raise TertiusRuntimeError(f"drawing name {drawing.name!r} is already used")
+        self._drawings.append(drawing)
 
     def component(self, mark: str) -> bd.Shape:
         """The shape of the component registered with this mark."""

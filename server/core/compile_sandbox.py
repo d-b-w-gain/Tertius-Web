@@ -262,6 +262,28 @@ try:
                 print(f"Failed to project {view_name}: {e}")
                 views[view_name] = []
 
+        end_phase("views")
+
+        # Part drawings declared with tertius.drawing.Drawing: each one is
+        # projected on its own part, with dimensions resolved. A drawing that
+        # cannot be laid out records its error so the API can report it.
+        drawings_out = []
+        if execution.drawings:
+            from tertius.drawing import DRAWING_SCHEMA, project_drawing
+
+            for drawing in execution.drawings:
+                try:
+                    drawings_out.append(project_drawing(drawing))
+                except Exception as exc:
+                    drawings_out.append({
+                        "schema": DRAWING_SCHEMA,
+                        "name": getattr(drawing, "name", "drawing"),
+                        "error": f"{type(exc).__name__}: {exc}",
+                    })
+        if drawings_out:
+            views["drawings"] = drawings_out
+        end_phase("drawings")
+
         with open(str(output_path), "w") as f:
             json.dump(views, f)
     else:
