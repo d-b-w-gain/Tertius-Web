@@ -1,0 +1,108 @@
+# Leak check rules (used by .github/workflows/leak-check.yml): gitleaks'
+# built-in secret rules, plus rules for hard-coded passwords and home-directory
+# paths that give away a machine username.
+#
+# To accept a finding (a test fixture, a documented example), either add
+#   gitleaks:allow
+# as a comment on that line, or put the finding's fingerprint (printed in the
+# CI job summary) in a .gitleaksignore file at the repo root.
+
+title = "leak-check"
+
+[extend]
+useDefault = true
+
+# ---- Passwords --------------------------------------------------------------
+# The built-in generic rule only fires on high-entropy strings, so a short or
+# dictionary password ("hunter2", "Coffee2024!") slips through. These catch any
+# literal value assigned to something called password/passwd/pwd/passphrase.
+
+[[rules]]
+id = "hardcoded-password"
+description = "Hard-coded password in code or config"
+regex = '''(?i)(?:password|passwd|passphrase|\bpwd)[a-z0-9_-]*["']?\s*(?:[:=]|:=|=>|==)\s*["']([^"'\s]{4,})["']'''
+secretGroup = 1
+keywords = ["pass", "pwd"]
+
+  [rules.allowlist]
+  regexTarget = "secret"
+  regexes = [
+    # obvious placeholders and dummies
+    '''(?i)^(?:replace|your|change|example|dummy|fake|sample|insert|enter|put)[-_ a-z0-9]*$''',
+    # ${VAR:-default}, $VAR, %VAR%, and code expressions (obj.attr, call(...))
+    '''^(?:\$|%[A-Za-z_])''',
+    '''^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$''',
+    '''[()\[\]]''',
+    # placeholders, templating and references to the environment
+    '''(?i)^(?:x+|\*+|\.+|-+|<[^>]*>|\{[^}]*\}|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|%\(?[a-z_]*\)?s|\{\{.*\}\})$''',
+    '''(?i)^(?:password|passwd|secret|changeme|change[-_]?me|your[-_ ]?password|my[-_]?password|example|placeholder|redacted|none|null|undefined|empty|required|optional|todo|fixme|\.\.\.|hidden|masked)$''',
+    # form field types / names, not values
+    '''(?i)^(?:text|current-password|new-password|off|on)$''',
+  ]
+
+[[rules]]
+id = "password-in-env-or-yaml"
+description = "Hard-coded password in a .env / YAML / INI style line"
+regex = '''(?im)^\s*(?:export\s+)?[A-Z0-9_.-]*(?:PASSWORD|PASSWD|PASSPHRASE|_PWD|_PASS)[A-Z0-9_.-]*\s*[:=]\s*([^\s"'#$]{4,})\s*$'''
+secretGroup = 1
+keywords = ["pass", "pwd"]
+
+  [rules.allowlist]
+  regexTarget = "secret"
+  regexes = [
+    # obvious placeholders and dummies
+    '''(?i)^(?:replace|your|change|example|dummy|fake|sample|insert|enter|put)[-_ a-z0-9]*$''',
+    # ${VAR:-default}, $VAR, %VAR%, and code expressions (obj.attr, call(...))
+    '''^(?:\$|%[A-Za-z_])''',
+    '''^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$''',
+    '''[()\[\]]''',
+    '''(?i)^(?:str|string|int|bool|boolean|none|null|nil|true|false|optional.*|required|secret|password|changeme|example|placeholder|redacted|x+|\*+|<[^>]*>|\{[^}]*\})$''',
+    # k8s secretKeyRef blocks, YAML anchors and references
+    '''^[&*!|>]''',
+  ]
+
+# ---- Machine usernames in paths ---------------------------------------------
+# A path like /home/alice/... or C:\Users\alice\... in committed code gives away
+# the username on the machine it was written on (and usually doesn't work
+# anywhere else). Use ~, $HOME, a relative path or an environment variable.
+
+[[rules]]
+id = "home-path-linux"
+description = "Hard-coded Linux home directory (reveals a machine username)"
+regex = '''(?:^|[^A-Za-z0-9._-])/home/([A-Za-z_][A-Za-z0-9._-]{1,31})(?:/|\b)'''
+secretGroup = 1
+keywords = ["/home/"]
+
+  [rules.allowlist]
+  regexTarget = "secret"
+  # generic names used by CI runners, containers and documentation
+  regexes = ['''^(?:runner|user|username|you|yourname|your_user|me|name|ubuntu|debian|pi|node|app|appuser|vscode|coder|codex|jovyan|linuxbrew|docker|admin|example|foo|bar|USER|USERNAME)$''']
+
+[[rules]]
+id = "home-path-macos"
+description = "Hard-coded macOS home directory (reveals a machine username)"
+regex = '''(?:^|[^A-Za-z0-9._-])/Users/([A-Za-z_][A-Za-z0-9._-]{1,31})(?:/|\b)'''
+secretGroup = 1
+keywords = ["/users/"]
+
+  [rules.allowlist]
+  regexTarget = "secret"
+  regexes = ['''^(?:Shared|runner|user|username|you|yourname|me|name|example|foo|admin|USER|USERNAME)$''']
+
+[[rules]]
+id = "home-path-windows"
+description = "Hard-coded Windows user profile path (reveals a machine username)"
+regex = '''(?i)\b[A-Z]:(?:\\{1,2}|/)Users(?:\\{1,2}|/)([^\\/"'\s<>|:*?%$]{2,32})'''
+secretGroup = 1
+keywords = ["users"]
+
+  [rules.allowlist]
+  regexTarget = "secret"
+  regexes = ['''(?i)^(?:Public|Default|Default User|All Users|runneradmin|runner|user|username|you|yourname|me|name|example|admin)$''']
+
+[allowlist]
+description = "Files that are never worth scanning"
+paths = [
+  '''(?i)(?:^|/)(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml|poetry\.lock|uv\.lock|Cargo\.lock|go\.sum)$''',
+  '''(?i)\.(?:png|jpe?g|gif|webp|ico|pdf|stl|step|stp|glb|gltf|blend|zip|gz|whl|woff2?|ttf|otf|mp3|mp4|wav)$''',
+]

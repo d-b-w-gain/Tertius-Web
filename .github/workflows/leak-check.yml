@@ -1,0 +1,113 @@
+# Leak check: fails when the code contains secrets, hard-coded passwords or
+# home-directory paths that reveal a machine username (/home/<you>,
+# /Users/<you>, C:\Users\<you>). Rules: .github/gitleaks.toml
+#
+# Each run scans every file in the commit, plus the commits being pushed or in
+# the pull request (so something added and then deleted is still caught).
+# Findings are listed in the job summary.
+#
+# Fixing a finding:
+#   - secret/password: move it to an env var or secret store and ROTATE it.
+#     Deleting it in a later commit doesn't remove it from git history.
+#   - home path: use ~, $HOME, %USERPROFILE%, Path.home() or a relative path.
+#   - false positive: add "gitleaks:allow" in a comment on that line, or put the
+#     fingerprint from the job summary in .gitleaksignore at the repo root.
+name: Leak check
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 4 * * 1"   # weekly, so rule changes are applied to old code too
+
+permissions:
+  contents: read
+
+env:
+  GITLEAKS_VERSION: 8.21.2
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          tgz="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfLO "$base/$tgz"
+          curl -sSfL "$base/gitleaks_${GITLEAKS_VERSION}_checksums.txt" | grep " $tgz\$" | sha256sum -c -
+          tar -xzf "$tgz" gitleaks
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Scan the files in this commit
+        id: files
+        continue-on-error: true
+        run: |
+          gitleaks dir . -c .github/gitleaks.toml --no-banner --redact \
+            -f json -r "$RUNNER_TEMP/files.json" -v
+
+      - name: Scan the new commits
+        id: commits
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -uo pipefail
+          if [ "$EVENT" = pull_request ]; then
+            range="$PR_BASE..$PR_HEAD"
+          elif [ -n "$BEFORE" ] && ! [[ "$BEFORE" =~ ^0+$ ]] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            range="$BEFORE..$AFTER"
+          elif [ "$(git rev-parse "origin/$DEFAULT_BRANCH" 2>/dev/null)" != "$AFTER" ] \
+               && git rev-parse -q --verify "origin/$DEFAULT_BRANCH" >/dev/null; then
+            range="origin/$DEFAULT_BRANCH..$AFTER"   # new branch
+          else
+            range="$AFTER"                          # first push: whole history
+          fi
+          echo "Scanning commits: $range"
+          gitleaks git . -c .github/gitleaks.toml --no-banner --redact \
+            --log-opts="$range" -f json -r "$RUNNER_TEMP/commits.json" -v
+
+      - name: Report
+        if: always()
+        env:
+          FILES: ${{ steps.files.outcome }}
+          COMMITS: ${{ steps.commits.outcome }}
+        run: |
+          set -uo pipefail
+          {
+            echo "## Leak check"
+            echo
+            for kind in files commits; do
+              f="$RUNNER_TEMP/$kind.json"
+              [ -s "$f" ] || continue
+              n=$(jq length "$f")
+              if [ "$n" = 0 ]; then echo "✅ No findings in $kind."; echo; continue; fi
+              echo "❌ **$n finding(s) in $kind**"
+              echo
+              echo "| Rule | Where | Fingerprint |"
+              echo "|---|---|---|"
+              jq -r '.[] | "| \(.RuleID) | `\(.File):\(.StartLine)`\(if .Commit != "" then " (" + .Commit[0:7] + ")" else "" end) | `\(.Fingerprint)` |"' "$f"
+              echo
+            done
+            echo "Fix: move secrets to environment variables / secret stores and rotate them;"
+            echo "use \`~\`, \`\$HOME\` or relative paths instead of \`/home/<you>\`."
+            echo "False positive? Add \`gitleaks:allow\` in a comment on that line, or put the"
+            echo "fingerprint in \`.gitleaksignore\`. Rules: \`.github/gitleaks.toml\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$FILES" = failure ] || [ "$COMMITS" = failure ]; then
+            echo "::error::Leak check found secrets, passwords or home-directory paths. See the job summary."
+            exit 1
+          fi
