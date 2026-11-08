@@ -31,7 +31,7 @@ Use the node kubeconfig for root-run k3s scripts:
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 ```
 
-From a normal user shell on this node, `/home/johnson/.kube/config` is also usable for read-only verification.
+From a normal user shell on this node, `$HOME/.kube/config` is also usable for read-only verification.
 
 ## Cluster Prerequisites
 

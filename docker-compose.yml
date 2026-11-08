@@ -57,7 +57,7 @@ services:
       APP_DB_HOST: postgres
       APP_DB_NAME: tertius
       APP_DB_OWNER: tertius
-      APP_DB_PASSWORD: tertius
+      APP_DB_PASSWORD: tertius  # gitleaks:allow (local dev default)
       AUTH_SESSION_SECRET: ${AUTH_SESSION_SECRET:-local-auth-session-secret-change-me}
       AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
       KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:-http://localhost:8080/realms/tertius}
@@ -238,7 +238,7 @@ services:
     environment:
       POSTGRES_DB: tertius
       POSTGRES_USER: tertius
-      POSTGRES_PASSWORD: tertius
+      POSTGRES_PASSWORD: tertius  # gitleaks:allow (local dev default)
       PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       - tertius-postgres:/var/lib/postgresql/data
@@ -252,7 +252,7 @@ services:
       - "8080:8080"
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
-      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin  # gitleaks:allow (local dev default)
       KC_PROXY_HEADERS: xforwarded
     volumes:
       - ./infra/keycloak/tertius-realm.json:/opt/keycloak/data/import/tertius-realm.json:ro

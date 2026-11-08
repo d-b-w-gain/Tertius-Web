@@ -469,7 +469,7 @@ Expected: all commands exit 0.
 Run the isolated local-values release and full AI flow:
 
 ```bash
-rtk env KUBECONFIG=/home/johnson/.kube/config \
+rtk env KUBECONFIG=$HOME/.kube/config \
   NAMESPACE=tertius \
   RELEASE_NAME=tertius-live-flow-smoke \
   UI_LOCAL_PORT=18083 \
@@ -478,7 +478,7 @@ rtk env KUBECONFIG=/home/johnson/.kube/config \
   TRACES_LOCAL_PORT=10431 \
   scripts/harness-k3s.sh up
 
-rtk env KUBECONFIG=/home/johnson/.kube/config \
+rtk env KUBECONFIG=$HOME/.kube/config \
   NAMESPACE=tertius \
   RELEASE_NAME=tertius-live-flow-smoke \
   UI_LOCAL_PORT=18083 \

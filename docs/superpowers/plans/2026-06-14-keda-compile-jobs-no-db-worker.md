@@ -605,15 +605,15 @@ rtk helm lint infra/charts/tertius
 Run:
 
 ```bash
-KUBECONFIG=/home/johnson/.kube/config rtk scripts/test-k3s-deployment.sh
+KUBECONFIG=$HOME/.kube/config rtk scripts/test-k3s-deployment.sh
 ```
 
 Then inspect:
 
 ```bash
-KUBECONFIG=/home/johnson/.kube/config rtk kubectl get scaledjob -n tertius
-KUBECONFIG=/home/johnson/.kube/config rtk kubectl get jobs -n tertius -l app.kubernetes.io/component=compile-job
-KUBECONFIG=/home/johnson/.kube/config rtk kubectl get pods -n tertius -l app.kubernetes.io/component=compile-job
+KUBECONFIG=$HOME/.kube/config rtk kubectl get scaledjob -n tertius
+KUBECONFIG=$HOME/.kube/config rtk kubectl get jobs -n tertius -l app.kubernetes.io/component=compile-job
+KUBECONFIG=$HOME/.kube/config rtk kubectl get pods -n tertius -l app.kubernetes.io/component=compile-job
 ```
 
 - [ ] **Step 5: Prove no DB env in compile pods**
@@ -621,7 +621,7 @@ KUBECONFIG=/home/johnson/.kube/config rtk kubectl get pods -n tertius -l app.kub
 Run against a live compile Job pod before it exits, or use a debug render/pod:
 
 ```bash
-KUBECONFIG=/home/johnson/.kube/config rtk kubectl exec -n tertius "$COMPILE_POD" -- env | rg 'DATABASE_URL|APP_DB_|POSTGRES|PG'
+KUBECONFIG=$HOME/.kube/config rtk kubectl exec -n tertius "$COMPILE_POD" -- env | rg 'DATABASE_URL|APP_DB_|POSTGRES|PG'
 ```
 
 Expected: no matches.

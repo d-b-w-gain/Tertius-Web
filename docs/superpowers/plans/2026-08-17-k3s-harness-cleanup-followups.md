@@ -159,8 +159,8 @@ git diff --check
 
 If the worktree has no `.venv`, set both `PATH` and
 `UV_PROJECT_ENVIRONMENT` to the main checkout's existing environment:
-`PATH="/home/johnson/code/Tertius-Web/.venv/bin:$PATH"` and
-`UV_PROJECT_ENVIRONMENT=/home/johnson/code/Tertius-Web/.venv`. Expected: every
+`PATH="$PWD/.venv/bin:$PATH"` and
+`UV_PROJECT_ENVIRONMENT=$PWD/.venv`. Expected: every
 command exits zero.
 
 - [x] **Step 4: Request independent code review**

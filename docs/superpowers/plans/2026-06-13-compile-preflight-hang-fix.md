@@ -374,7 +374,7 @@ Expected: lint passes, or if this repo's lint script is currently absent/broken,
 Run:
 
 ```bash
-rtk kubectl --kubeconfig=/home/johnson/.kube/config logs -n tertius deploy/tertius-ui -f --since=1m
+rtk kubectl --kubeconfig=$HOME/.kube/config logs -n tertius deploy/tertius-ui -f --since=1m
 ```
 
 Expected when compile starts: one `POST /api/intus/projects/default_purlin/compile`.
@@ -384,7 +384,7 @@ Expected when compile starts: one `POST /api/intus/projects/default_purlin/compi
 Run:
 
 ```bash
-rtk kubectl --kubeconfig=/home/johnson/.kube/config exec -n tertius tertius-postgres-1 -- \
+rtk kubectl --kubeconfig=$HOME/.kube/config exec -n tertius tertius-postgres-1 -- \
   psql -U postgres -d tertius -c "select id, status, created_at, finished_at, error from compile_jobs order by created_at desc limit 5;"
 ```
 
@@ -395,7 +395,7 @@ Expected: new job reaches `succeeded` or `failed`; it must not remain missing wh
 Run:
 
 ```bash
-rtk kubectl --kubeconfig=/home/johnson/.kube/config exec -n tertius tertius-nats-0 -c nats -- \
+rtk kubectl --kubeconfig=$HOME/.kube/config exec -n tertius tertius-nats-0 -c nats -- \
   sh -lc 'wget -qO- http://127.0.0.1:8222/jsz?consumers=true | head -c 12000'
 ```
 

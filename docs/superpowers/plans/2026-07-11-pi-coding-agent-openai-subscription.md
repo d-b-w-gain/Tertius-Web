@@ -844,7 +844,7 @@ The final `rg` must have no active-runtime matches. Historical documents under `
 Canonical live validation:
 
 ```bash
-KUBECONFIG=/home/johnson/.kube/config \
+KUBECONFIG=$HOME/.kube/config \
 NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
 KEDA_ENABLED=true scripts/harness-k3s.sh up
 
@@ -856,7 +856,7 @@ scripts/pi-agent-auth.sh verify \
   --namespace tertius \
   --release tertius-live-flow-smoke
 
-KUBECONFIG=/home/johnson/.kube/config \
+KUBECONFIG=$HOME/.kube/config \
 NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
 scripts/harness-k3s.sh live-flow
 ```

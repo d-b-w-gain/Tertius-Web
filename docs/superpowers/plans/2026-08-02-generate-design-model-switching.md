@@ -654,8 +654,8 @@ Dispatch a code-review subagent with the approved design, this plan, base SHA `5
 Use the local-values smoke release described in `docs/harness/local-harness.md` and run:
 
 ```bash
-KUBECONFIG=/home/johnson/.kube/config NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke KEDA_ENABLED=true rtk scripts/harness-k3s.sh up
-KUBECONFIG=/home/johnson/.kube/config NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke rtk scripts/harness-k3s.sh live-flow
+KUBECONFIG=$HOME/.kube/config NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke KEDA_ENABLED=true rtk scripts/harness-k3s.sh up
+KUBECONFIG=$HOME/.kube/config NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke rtk scripts/harness-k3s.sh live-flow
 ```
 
 Do not set `LIVE_FLOW_COMPILE_ONLY=true`. In the browser, verify Sol/Luna/Terra are present, the context selector is absent, select a non-default model, submit a real edit, observe terminal completion and compile artifact, and inspect console/network failures. Verify the persisted/result model matches the selection without exposing prompts, source, or credentials.

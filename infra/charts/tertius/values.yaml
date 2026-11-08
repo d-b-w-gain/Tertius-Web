@@ -392,7 +392,7 @@ keycloak:
     smokeUser:
       enabled: false
       username: demo
-      password: demo
+      password: demo  # gitleaks:allow (smoke-test user, disabled by default)
       email: demo@example.com
       firstName: Demo
       lastName: User

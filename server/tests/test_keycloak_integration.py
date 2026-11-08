@@ -46,7 +46,7 @@ def get_demo_access_token(base_url: str) -> str:
             "grant_type": "password",
             "client_id": "tertius-ui",
             "username": "demo",
-            "password": "demo",
+            "password": "demo",  # gitleaks:allow (local demo user)
         },
         timeout=10,
     )

@@ -1,0 +1,10 @@
+# Leak check false positives (see .github/gitleaks.toml). Fingerprint = file:rule:line.
+# git commit SHAs in force-with-lease commands for branches named *-api
+docs/superpowers/plans/2026-08-16-lean-3mf-rereview-fixes.md:generic-api-key:568
+docs/superpowers/plans/2026-08-17-final-3mf-review-fixes.md:generic-api-key:278
+docs/superpowers/plans/2026-08-17-final-3mf-review-fixes.md:generic-api-key:289
+# base64 "dummy-..." values in the k3s harness test fixtures
+scripts/test-k3s-harness-lifecycle.sh:generic-api-key:140
+scripts/test-k3s-harness-lifecycle.sh:generic-api-key:142
+scripts/test-k3s-harness-lifecycle.sh:generic-api-key:646
+scripts/test-k3s-harness-lifecycle.sh:generic-api-key:648

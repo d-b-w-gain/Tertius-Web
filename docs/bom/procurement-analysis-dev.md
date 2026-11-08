@@ -31,12 +31,12 @@ FastAPI, SQLAlchemy, or arbitrary user code for source-analysis tests.
 From the app repo:
 
 ```powershell
-cd C:\Users\ben\Documents\Projects\Tertius-Web
+cd $env:USERPROFILE\Documents\Projects\Tertius-Web
 ```
 
 Use a dedicated project folder for each design/job. Do not overwrite a named
 fixture such as `3x5shed` with an unrelated concept model; create a new folder
-under `C:\Users\ben\ContextUI\default\cache\tertius\intus` instead. The
+under `%USERPROFILE%\ContextUI\default\cache\tertius\intus` instead. The
 playground treats the folder name as part of the human review context, so a
 wrong folder name makes the analysis misleading even when the JSON is valid.
 
@@ -44,7 +44,7 @@ Prefer the repo venv when it is available:
 
 ```powershell
 .\temp_env\Scripts\python.exe scripts\spikes\procurement_analysis_playground.py `
-  --project-dir C:\Users\ben\ContextUI\default\cache\tertius\intus\3x5shed `
+  --project-dir $env:USERPROFILE\ContextUI\default\cache\tertius\intus\3x5shed `
   --source-only `
   --out C:\tmp\3x5shed-procurement_analysis.json
 ```
@@ -52,7 +52,7 @@ Prefer the repo venv when it is available:
 Open the static viewer:
 
 ```text
-file:///C:/Users/ben/Documents/Projects/Tertius-Web/docs/bom/procurement-analysis-viewer.html
+file:///<your checkout>/docs/bom/procurement-analysis-viewer.html
 ```
 
 Then use the file picker in the page to load:
@@ -89,7 +89,7 @@ For visual/build-tree evidence, let the playground compile a temporary GLB:
 
 ```powershell
 .\temp_env\Scripts\python.exe scripts\spikes\procurement_analysis_playground.py `
-  --design-py C:\Users\ben\ContextUI\default\cache\tertius\intus\3x5shed\design.py `
+  --design-py $env:USERPROFILE\ContextUI\default\cache\tertius\intus\3x5shed\design.py `
   --quality sketch `
   --compile-timeout 300 `
   --out C:\tmp\3x5shed-procurement_analysis.json
@@ -122,7 +122,7 @@ Run the shed through the visual playground first:
 
 ```powershell
 .\temp_env\Scripts\python.exe scripts\spikes\procurement_analysis_playground.py `
-  --design-py C:\Users\dbwga\Documents\Projects\CAD\3x5shed\design.py `
+  --design-py $env:USERPROFILE\Documents\Projects\CAD\3x5shed\design.py `
   --quality sketch `
   --compile-timeout 300 `
   --out C:\tmp\3x5shed-procurement_analysis.json
@@ -252,7 +252,7 @@ Regenerate a playground artifact:
 
 ```powershell
 .\temp_env\Scripts\python.exe scripts\spikes\procurement_analysis_playground.py `
-  --project-dir C:\Users\ben\ContextUI\default\cache\tertius\intus\3x5shed `
+  --project-dir $env:USERPROFILE\ContextUI\default\cache\tertius\intus\3x5shed `
   --source-only `
   --out C:\tmp\3x5shed-procurement_analysis.json
 ```
@@ -260,7 +260,7 @@ Regenerate a playground artifact:
 Open the static viewer and load the JSON:
 
 ```text
-file:///C:/Users/ben/Documents/Projects/Tertius-Web/docs/bom/procurement-analysis-viewer.html
+file:///<your checkout>/docs/bom/procurement-analysis-viewer.html
 ```
 
 If the app API is running from the local K3s stack, patch it after analyzer

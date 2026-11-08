@@ -24,7 +24,7 @@ calculation result must record both, in this order:
 
 The local reference copy reviewed for this decision is:
 
-`C:\Users\dbwga\Downloads\SCI_P399.pdf`
+`%USERPROFILE%\Downloads\SCI_P399.pdf`
 
 ## Australian verification sequence with supplemental P399 mapping
 

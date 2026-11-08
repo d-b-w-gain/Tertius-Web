@@ -99,7 +99,7 @@ This proves the mechanism can avoid full top-level design construction for well-
 The corrected prototype was also run against the reference design at:
 
 ```text
-C:\Users\dbwga\Documents\Projects\CAD\3x5shed
+%USERPROFILE%\Documents\Projects\CAD\3x5shed
 ```
 
 First, a full provenance/chunk pass produced a real source map and artifact
@@ -107,7 +107,7 @@ chunks:
 
 ```powershell
 python scripts/spikes/profile_chunked_glb_manifest.py `
-  --project-dir C:\Users\dbwga\Documents\Projects\CAD\3x5shed `
+  --project-dir $env:USERPROFILE\Documents\Projects\CAD\3x5shed `
   --entrypoint design.py `
   --quality sketch `
   --output-dir .tmp/issue-309/real-shed-full `

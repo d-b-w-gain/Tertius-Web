@@ -294,7 +294,7 @@ Expected: PASS.
 Because this changes Generate Design and AI-edit-linked compile behavior, run full live-flow, not compile-only:
 
 ```bash
-KUBECONFIG=/home/johnson/.kube/config \
+KUBECONFIG=$HOME/.kube/config \
 NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
 UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
 METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \

@@ -16,11 +16,11 @@ Implementation plan.
 
 ## Current State
 
-- [server/core/models.py](/home/johnson/code/Tertius-Web/server/core/models.py:246) defines `LlmEditJob` with `tenant_id`, `project_id`, `status`, `created_at`, `finished_at`, and `attempt_count`.
-- [server/core/repositories.py](/home/johnson/code/Tertius-Web/server/core/repositories.py:724) defines `LlmEditRepository.start_job(...)`, `mark_job_dispatched(...)`, `finish_job(...)`, and query-based stale reconciliation.
-- [server/workflows/intus/intus_server.py](/home/johnson/code/Tertius-Web/server/workflows/intus/intus_server.py:1080) is the LLM edit job submit gate: `POST /projects/{name}/files/llm-edit/jobs`.
-- [server/workflows/intus/intus_server.py](/home/johnson/code/Tertius-Web/server/workflows/intus/intus_server.py:1175) already reconciles stale project jobs before returning history.
-- [server/workflows/intus/intus_server.py](/home/johnson/code/Tertius-Web/server/workflows/intus/intus_server.py:1211) already reconciles a stale single job before returning job status.
+- [server/core/models.py](../../../server/core/models.py#L246) defines `LlmEditJob` with `tenant_id`, `project_id`, `status`, `created_at`, `finished_at`, and `attempt_count`.
+- [server/core/repositories.py](../../../server/core/repositories.py#L724) defines `LlmEditRepository.start_job(...)`, `mark_job_dispatched(...)`, `finish_job(...)`, and query-based stale reconciliation.
+- [server/workflows/intus/intus_server.py](../../../server/workflows/intus/intus_server.py#L1080) is the LLM edit job submit gate: `POST /projects/{name}/files/llm-edit/jobs`.
+- [server/workflows/intus/intus_server.py](../../../server/workflows/intus/intus_server.py#L1175) already reconciles stale project jobs before returning history.
+- [server/workflows/intus/intus_server.py](../../../server/workflows/intus/intus_server.py#L1211) already reconciles a stale single job before returning job status.
 - Existing active statuses are `queued` and `running`.
 - Existing terminal statuses are `succeeded` and `failed`.
 - Existing file-version protection in `ProjectRepository.stage_file_updates(...)` remains unchanged. This plan is only for project-level LLM edit admission.
