@@ -284,7 +284,7 @@ rtk bash scripts/check-runtime-parity.sh
 
 - [x] **Step 2: Install and verify the user timer**
 
-Install with the canonical checkout path and `/home/johnson/.kube/config`, then
+Install with the canonical checkout path and `$HOME/.kube/config`, then
 verify the timer is enabled and list its next activation without exposing
 credentials.
 

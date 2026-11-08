@@ -177,7 +177,7 @@ gate:
   calculation sheets; legacy job 14 remains pending and marks this as a
   correctness blocker;
 - the analysis writes debug snapshots to hard-coded
-  `C:\Users\ben\AppData\Local\Temp` paths;
+  `%USERPROFILE%\AppData\Local\Temp` paths;
 - `units.py` installs Pint with `pip` at import time if missing;
 - server documentation says PyNite uses millimetres internally while the active
   unified analysis explicitly uses metres.

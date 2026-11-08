@@ -1748,7 +1748,7 @@ Expected: both report `0:0 444` and the same SHA; API reports no Pi tooling.
 Create the disposable non-Flux release with the Pi worker disabled but its retained claim present:
 
 ```bash
-KUBECONFIG=/home/johnson/.kube/config \
+KUBECONFIG=$HOME/.kube/config \
 NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
 UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
 METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \
@@ -1758,22 +1758,22 @@ KEDA_ENABLED=true PI_AGENT_ENABLED=false scripts/harness-k3s.sh up
 Authenticate and verify the exact release image/PVC:
 
 ```bash
-KUBECONFIG=/home/johnson/.kube/config \
+KUBECONFIG=$HOME/.kube/config \
 scripts/pi-agent-auth.sh login --namespace tertius --release tertius-live-flow-smoke
-KUBECONFIG=/home/johnson/.kube/config \
+KUBECONFIG=$HOME/.kube/config \
 scripts/pi-agent-auth.sh verify --namespace tertius --release tertius-live-flow-smoke
 ```
 
 Redeploy with both KEDA and Pi enabled, then run the full two-turn flow through the same release and ports:
 
 ```bash
-KUBECONFIG=/home/johnson/.kube/config \
+KUBECONFIG=$HOME/.kube/config \
 NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
 UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
 METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \
 KEDA_ENABLED=true PI_AGENT_ENABLED=true scripts/harness-k3s.sh up
 
-KUBECONFIG=/home/johnson/.kube/config \
+KUBECONFIG=$HOME/.kube/config \
 NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
 UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
 METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \

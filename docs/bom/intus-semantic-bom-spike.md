@@ -8,7 +8,7 @@ Verify whether Intus design scripts contain enough structured information to hel
 
 The first probe target is:
 
-`C:\Users\ben\ContextUI\default\cache\tertius\intus\3x5shed\design.py`
+`%USERPROFILE%\ContextUI\default\cache\tertius\intus\3x5shed\design.py`
 
 ## Spike Utility
 

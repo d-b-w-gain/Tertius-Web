@@ -82,7 +82,7 @@ Run:
 ```bash
 rtk .venv/bin/pytest server/tests/test_config.py::test_nats_storage_has_headroom_for_compile_sidecars -q
 rtk helm lint infra/charts/tertius
-rtk env UV_CACHE_DIR=.uv-cache UV_NO_BUILD_ISOLATION=1 PATH=/opt/homebrew/bin:/Users/johnsonyuen/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin bash scripts/test-deployment-config.sh
+rtk env UV_CACHE_DIR=.uv-cache UV_NO_BUILD_ISOLATION=1 PATH=/opt/homebrew/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin bash scripts/test-deployment-config.sh
 rtk git diff --check
 ```
 
@@ -226,7 +226,7 @@ rtk .venv/bin/pytest server/tests/test_config.py server/tests/test_object_store.
 rtk .venv/bin/mypy
 rtk .venv/bin/ruff check server/core/object_store.py server/core/three_mf_archive.py server/tests/test_config.py server/tests/test_object_store.py server/tests/test_compile_job.py server/tests/test_tertius_imports_runtime.py server/tests/test_three_mf_archive.py server/tests/test_project_assets.py
 rtk helm lint infra/charts/tertius
-rtk env PATH=/opt/homebrew/bin:/Users/johnsonyuen/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin bash scripts/check-runtime-parity.sh
+rtk env PATH=/opt/homebrew/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin bash scripts/check-runtime-parity.sh
 ```
 
 Expected: focused tests, mypy, scoped Ruff, and Helm lint pass. Runtime parity either passes or explicitly skips Docker-only checks when Docker is unavailable.

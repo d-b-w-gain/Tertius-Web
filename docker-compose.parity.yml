@@ -58,7 +58,7 @@ services:
       APP_DB_HOST: postgres
       APP_DB_NAME: tertius
       APP_DB_OWNER: tertius
-      APP_DB_PASSWORD: tertius
+      APP_DB_PASSWORD: tertius  # gitleaks:allow (local dev default)
       AUTH_SESSION_SECRET: ${AUTH_SESSION_SECRET:-local-auth-session-secret-change-me}
       AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
       KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:-http://localhost:8080/realms/tertius}

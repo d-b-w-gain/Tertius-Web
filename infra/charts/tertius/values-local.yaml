@@ -122,7 +122,7 @@ postgres:
   instances: 1
   appUserSecret:
     create: true
-    password: tertius-local-password
+    password: tertius-local-password  # gitleaks:allow (local cluster only)
   storage:
     size: 32Gi
     storageClass: local-path
@@ -135,7 +135,7 @@ keycloak:
     instances: 1
     appUserSecret:
       create: true
-      password: keycloak-local-password
+      password: keycloak-local-password  # gitleaks:allow (local cluster only)
     storage:
       size: 2Gi
       storageClass: local-path

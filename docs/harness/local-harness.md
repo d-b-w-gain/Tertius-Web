@@ -183,7 +183,7 @@ disposable and should not reuse the Flux-managed `tertius` release.
 Bring up or refresh the PR runtime:
 
 ```bash
-KUBECONFIG=/home/johnson/.kube/config \
+KUBECONFIG=$HOME/.kube/config \
 NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
 UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
 METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \
@@ -202,7 +202,7 @@ To share the preview from another device on the network, bind the review
 port-forwards to all interfaces and open `http://<host-ip>:18083`:
 
 ```bash
-KUBECONFIG=/home/johnson/.kube/config \
+KUBECONFIG=$HOME/.kube/config \
 NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
 UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
 METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \
@@ -214,7 +214,7 @@ Use the wildcard bind only for intentional short-lived previews.
 For subsequent review sessions, reuse the deployed release without rebuilding:
 
 ```bash
-KUBECONFIG=/home/johnson/.kube/config \
+KUBECONFIG=$HOME/.kube/config \
 NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
 UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
 METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \
@@ -224,13 +224,13 @@ scripts/harness-k3s.sh ports
 Run PR evidence through the UI origin before asking for review:
 
 ```bash
-KUBECONFIG=/home/johnson/.kube/config \
+KUBECONFIG=$HOME/.kube/config \
 NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
 UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
 METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \
 scripts/harness-k3s.sh smoke
 
-KUBECONFIG=/home/johnson/.kube/config \
+KUBECONFIG=$HOME/.kube/config \
 NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
 UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
 METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \
@@ -245,7 +245,7 @@ Stop only the local port-forwards when the deployed runtime should remain
 available for reviewers:
 
 ```bash
-KUBECONFIG=/home/johnson/.kube/config \
+KUBECONFIG=$HOME/.kube/config \
 NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
 UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
 METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \
@@ -256,7 +256,7 @@ Remove the disposable release after review. Full cleanup leaves no release
 database, NATS, Valkey, or telemetry PVCs behind:
 
 ```bash
-KUBECONFIG=/home/johnson/.kube/config \
+KUBECONFIG=$HOME/.kube/config \
 NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
 UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
 METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \
@@ -305,7 +305,7 @@ Required environment:
 ```bash
 KEYCLOAK_TOKEN_URL=http://localhost:8080/realms/tertius/protocol/openid-connect/token
 KEYCLOAK_SMOKE_USERNAME=demo
-KEYCLOAK_SMOKE_PASSWORD=demo
+KEYCLOAK_SMOKE_PASSWORD=demo  # gitleaks:allow (local demo user)
 ```
 
 When using `scripts/harness-k3s.sh live-flow`, the wrapper sources

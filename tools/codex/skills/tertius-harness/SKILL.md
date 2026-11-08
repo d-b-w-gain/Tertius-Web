@@ -54,13 +54,13 @@ disposable k3s frontend PR flow from `docs/harness/local-harness.md`.
 Default local-only preview:
 
 ```bash
-KUBECONFIG=/home/johnson/.kube/config \
+KUBECONFIG=$HOME/.kube/config \
 NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
 UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
 METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \
 KEDA_ENABLED=true scripts/harness-k3s.sh up
 
-KUBECONFIG=/home/johnson/.kube/config \
+KUBECONFIG=$HOME/.kube/config \
 NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
 UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
 METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \
@@ -71,7 +71,7 @@ When the user explicitly asks for another machine to connect, bind only the
 review port-forwards to all interfaces:
 
 ```bash
-KUBECONFIG=/home/johnson/.kube/config \
+KUBECONFIG=$HOME/.kube/config \
 NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
 UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
 METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \

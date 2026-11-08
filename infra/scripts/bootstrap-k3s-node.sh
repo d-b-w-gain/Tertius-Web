@@ -64,8 +64,13 @@ find_helm() {
     return
   fi
 
-  if [ -x /home/johnson/.local/bin/helm ]; then
-    HELM_BIN="/home/johnson/.local/bin/helm"
+  # Under sudo, $HOME is root's; also look in the invoking user's ~/.local/bin.
+  local user_home="$HOME"
+  if [ -n "${SUDO_USER:-}" ]; then
+    user_home="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+  fi
+  if [ -x "$user_home/.local/bin/helm" ]; then
+    HELM_BIN="$user_home/.local/bin/helm"
     return
   fi
 

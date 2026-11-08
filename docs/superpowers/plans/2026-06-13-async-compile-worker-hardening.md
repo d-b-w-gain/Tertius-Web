@@ -1262,7 +1262,7 @@ Expected: no output.
 Run:
 
 ```bash
-KUBECONFIG=/home/johnson/.kube/config rtk scripts/test-k3s-deployment.sh
+KUBECONFIG=$HOME/.kube/config rtk scripts/test-k3s-deployment.sh
 ```
 
 Expected: the harness waits for Postgres, Valkey, NATS, Keycloak, API, UI, and compile worker readiness, then completes smoke checks.
@@ -1272,9 +1272,9 @@ Expected: the harness waits for Postgres, Valkey, NATS, Keycloak, API, UI, and c
 Run:
 
 ```bash
-KUBECONFIG=/home/johnson/.kube/config rtk kubectl get pods -n tertius -l app.kubernetes.io/component=compile-worker
-KUBECONFIG=/home/johnson/.kube/config rtk kubectl logs -n tertius deploy/tertius-api-compile-worker --all-containers=true --since=10m --tail=200 --prefix=true
-KUBECONFIG=/home/johnson/.kube/config rtk kubectl run tertius-nats-check-$(date +%s) -n tertius --restart=Never --rm -i --image=natsio/nats-box:0.19.7 --command -- nats consumer info TERTIUS_COMPILE compile-workers --server nats://tertius-nats:4222
+KUBECONFIG=$HOME/.kube/config rtk kubectl get pods -n tertius -l app.kubernetes.io/component=compile-worker
+KUBECONFIG=$HOME/.kube/config rtk kubectl logs -n tertius deploy/tertius-api-compile-worker --all-containers=true --since=10m --tail=200 --prefix=true
+KUBECONFIG=$HOME/.kube/config rtk kubectl run tertius-nats-check-$(date +%s) -n tertius --restart=Never --rm -i --image=natsio/nats-box:0.19.7 --command -- nats consumer info TERTIUS_COMPILE compile-workers --server nats://tertius-nats:4222
 ```
 
 Expected:
