@@ -43,7 +43,7 @@ keywords = ["pass", "pwd"]
 [[rules]]
 id = "password-in-env-or-yaml"
 description = "Hard-coded password in a .env / YAML / INI style line"
-regex = '''(?im)^\s*(?:export\s+)?[A-Z0-9_.-]*(?:PASSWORD|PASSWD|PASSPHRASE|_PWD|_PASS)[A-Z0-9_.-]*\s*[:=]\s*([^\s"'#$]{4,})\s*$'''
+regex = '''(?im)^[ \t]*(?:export[ \t]+)?[A-Z0-9_.-]*(?:PASSWORD|PASSWD|PASSPHRASE|_PWD|_PASS)[A-Z0-9_.-]*[ \t]*[:=][ \t]*([^\s"'#$]{4,})[ \t]*$'''
 secretGroup = 1
 keywords = ["pass", "pwd"]
 
