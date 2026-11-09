@@ -368,6 +368,7 @@ class Drawing:
         notes_at: Sequence[float] | None = None,
         decimals: int = 2,
         fields: Mapping[str, str] | None = None,
+        drawing_set: "DrawingSet | None" = None,
         register: bool = True,
     ) -> None:
         if not isinstance(part, bd.Shape):
@@ -402,10 +403,13 @@ class Drawing:
         self.notes_at = None if notes_at is None else (float(notes_at[0]), float(notes_at[1]))
         self.decimals = int(decimals)
         self.views: list[View] = []
+        self.drawing_set: DrawingSet | None = None
         if register:
             from .session import current_session
 
             current_session().register_drawing(self)
+        if drawing_set is not None:
+            drawing_set.add(self)
 
     def view(
         self,
@@ -437,6 +441,58 @@ class Drawing:
         )
         self.views.append(v)
         return v
+
+
+class DrawingSet:
+    """An ordered set of drawing sheets issued together (one multi-page PDF).
+
+    ``DrawingSet("Drain_Holes", title=..., number=...)`` registers itself on the
+    compile session; add sheets with ``Drawing(..., drawing_set=s)`` or
+    ``s.add(drw)``. Sheet order is the order added, and each sheet's title block
+    reads SHEET n OF m.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        *,
+        title: str | None = None,
+        number: str | None = None,
+        register: bool = True,
+    ) -> None:
+        name = str(name).strip()
+        if not name:
+            raise DrawingError("DrawingSet needs a name")
+        self.name = name
+        self.title = title or name
+        self.number = number or name
+        self.drawings: list[Drawing] = []
+        if register:
+            from .session import current_session
+
+            current_session().register_drawing_set(self)
+
+    def add(self, drawing: "Drawing") -> "Drawing":
+        if not isinstance(drawing, Drawing):
+            raise DrawingError("DrawingSet.add takes a Drawing")
+        if drawing.drawing_set is not None and drawing.drawing_set is not self:
+            raise DrawingError(
+                f"drawing {drawing.name!r} is already in set {drawing.drawing_set.name!r}"
+            )
+        if drawing in self.drawings:
+            return drawing
+        drawing.drawing_set = self
+        self.drawings.append(drawing)
+        return drawing
+
+    def describe(self) -> dict[str, Any]:
+        """The set as stored in the drafting build output."""
+        return {
+            "name": self.name,
+            "title": self.title,
+            "number": self.number,
+            "sheets": [d.name for d in self.drawings],
+        }
 
 
 # ------------------------------------------------------------- projection
@@ -850,14 +906,23 @@ def project_drawing(drawing: Drawing) -> dict[str, Any]:
     title_block["scale"] = _scale_text(drawing.scale)
     title_block["sheet"] = drawing.sheet
     title_block["projection"] = drawing.projection
+    fields = dict(drawing.extra_fields)
+    drawing_set = None
+    if drawing.drawing_set is not None:
+        ds = drawing.drawing_set
+        index = ds.drawings.index(drawing) + 1
+        drawing_set = {"name": ds.name, "title": ds.title, "number": ds.number,
+                       "index": index, "count": len(ds.drawings)}
+        fields.setdefault("sheet_no", f"{index} OF {len(ds.drawings)}")
     return {
         "schema": DRAWING_SCHEMA,
         "name": drawing.name,
+        "set": drawing_set,
         "sheet": {"size": drawing.sheet, "width": sheet_w, "height": sheet_h},
         "scale": drawing.scale,
         "projection": drawing.projection,
         "title_block": title_block,
-        "fields": dict(drawing.extra_fields),
+        "fields": fields,
         "notes": list(drawing.notes),
         "notes_at": list(drawing.notes_at) if drawing.notes_at else None,
         "views": views_out,
@@ -887,6 +952,7 @@ __all__ = [
     "DRAWING_SCHEMA",
     "Drawing",
     "DrawingError",
+    "DrawingSet",
     "SHEET_SIZES",
     "STANDARD_VIEWS",
     "View",

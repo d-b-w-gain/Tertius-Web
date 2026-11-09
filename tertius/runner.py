@@ -32,6 +32,8 @@ class DesignExecution:
     namespace: dict[str, Any]
     # Part drawings (tertius.drawing.Drawing) declared while design.py ran.
     drawings: tuple[Any, ...] = ()
+    # Drawing sets (tertius.drawing.DrawingSet): ordered groups of those drawings.
+    drawing_sets: tuple[Any, ...] = ()
 
 
 def _reject_reserved_project_runtime(project_dir: Path) -> None:
@@ -84,6 +86,7 @@ def execute_design(project_dir: Path) -> DesignExecution:
                     "design.py must assign the final Build123D Shape to `model`"
                 )
             drawings = session.drawings
+            drawing_sets = session.drawing_sets
             compiled_design = session.finalize(model)
             projections = all_workbench_projections(compiled_design, model=model)
     finally:
@@ -95,6 +98,7 @@ def execute_design(project_dir: Path) -> DesignExecution:
         projections=projections,
         namespace=namespace,
         drawings=drawings,
+        drawing_sets=drawing_sets,
     )
 
 

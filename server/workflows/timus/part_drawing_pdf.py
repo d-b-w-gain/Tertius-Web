@@ -30,13 +30,19 @@ TITLE_BLOCK_H = 40.0
 
 
 class _Sheet:
-    def __init__(self, width: float, height: float) -> None:
+    def __init__(self, width: float, height: float, pdf: FPDF | None = None) -> None:
+        """One sheet. With ``pdf`` the sheet is added as a new page of that
+        document (drawing sets); otherwise a new one-page document is started."""
         self.w = width
         self.h = height
-        self.pdf = FPDF(orientation="landscape", unit="mm", format=(height, width))
-        self.pdf.set_auto_page_break(False)
-        self.pdf.set_margins(0, 0, 0)
-        self.pdf.add_page()
+        if pdf is None:
+            self.pdf = FPDF(orientation="landscape", unit="mm", format=(height, width))
+            self.pdf.set_auto_page_break(False)
+            self.pdf.set_margins(0, 0, 0)
+            self.pdf.add_page()
+        else:
+            self.pdf = pdf
+            self.pdf.add_page(orientation="landscape", format=(height, width))
         self.pdf.set_draw_color(*INK)
         self.pdf.set_text_color(*INK)
         self.pdf.set_fill_color(*INK)
@@ -330,19 +336,43 @@ def _notes(s: _Sheet, doc: dict[str, Any]) -> None:
         s.text(x, top - i * 5.0, _latin(str(note)), size=8.5, align="left")
 
 
-def render_part_drawing_pdf(doc: dict[str, Any]) -> bytes:
-    """PDF bytes for one ``tertius.part-drawing.v1`` document."""
-    sheet = doc.get("sheet", {})
-    s = _Sheet(float(sheet.get("width", 420.0)), float(sheet.get("height", 297.0)))
-    s.pdf.set_title(_latin(str(doc.get("title_block", {}).get("title", doc.get("name", "")))))
-    s.pdf.set_creator("Tertius drafting")
-    s.pdf.set_author("")
+def _draw_sheet(s: _Sheet, doc: dict[str, Any]) -> None:
     _border(s)
     _views(s, doc)
     _dimensions(s, doc)
     _notes(s, doc)
     _title_block(s, doc)
+
+
+def _sheet_size(doc: dict[str, Any]) -> tuple[float, float]:
+    sheet = doc.get("sheet", {})
+    return float(sheet.get("width", 420.0)), float(sheet.get("height", 297.0))
+
+
+def render_part_drawing_pdf(doc: dict[str, Any]) -> bytes:
+    """PDF bytes for one ``tertius.part-drawing.v1`` document."""
+    s = _Sheet(*_sheet_size(doc))
+    s.pdf.set_title(_latin(str(doc.get("title_block", {}).get("title", doc.get("name", "")))))
+    s.pdf.set_creator("Tertius drafting")
+    s.pdf.set_author("")
+    _draw_sheet(s, doc)
     return bytes(s.pdf.output())
 
 
-__all__ = ["render_part_drawing_pdf"]
+def render_drawing_set_pdf(docs: list[dict[str, Any]], title: str = "") -> bytes:
+    """One multi-page PDF for a drawing set: each document on its own page, in
+    order, each page at its own sheet size."""
+    if not docs:
+        raise ValueError("a drawing set needs at least one sheet")
+    s = _Sheet(*_sheet_size(docs[0]))
+    s.pdf.set_title(_latin(title or str(docs[0].get("title_block", {}).get("title", ""))))
+    s.pdf.set_creator("Tertius drafting")
+    s.pdf.set_author("")
+    _draw_sheet(s, docs[0])
+    for doc in docs[1:]:
+        page = _Sheet(*_sheet_size(doc), pdf=s.pdf)
+        _draw_sheet(page, doc)
+    return bytes(s.pdf.output())
+
+
+__all__ = ["render_drawing_set_pdf", "render_part_drawing_pdf"]

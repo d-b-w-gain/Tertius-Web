@@ -49,6 +49,7 @@ class CompileSession:
         self._connected_ports: set[tuple[str, str]] = set()
         self._used_connector_tokens: set[str] = set()
         self._drawings: list[Any] = []
+        self._drawing_sets: list[Any] = []
         self._finalized = False
 
     @property
@@ -81,6 +82,17 @@ class CompileSession:
         if any(existing.name == drawing.name for existing in self._drawings):
             raise TertiusRuntimeError(f"drawing name {drawing.name!r} is already used")
         self._drawings.append(drawing)
+
+    @property
+    def drawing_sets(self) -> tuple[Any, ...]:
+        """Drawing sets declared with ``tertius.drawing.DrawingSet``, in order."""
+        return tuple(self._drawing_sets)
+
+    def register_drawing_set(self, drawing_set: Any) -> None:
+        self._ensure_open()
+        if any(existing.name == drawing_set.name for existing in self._drawing_sets):
+            raise TertiusRuntimeError(f"drawing set name {drawing_set.name!r} is already used")
+        self._drawing_sets.append(drawing_set)
 
     def component(self, mark: str) -> bd.Shape:
         """The shape of the component registered with this mark."""

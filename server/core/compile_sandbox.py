@@ -282,6 +282,11 @@ try:
                     })
         if drawings_out:
             views["drawings"] = drawings_out
+        # Drawing sets (tertius.drawing.DrawingSet): ordered sheet names, served
+        # as one multi-page PDF by the drawing-sets endpoint.
+        sets_out = [ds.describe() for ds in getattr(execution, "drawing_sets", ()) or ()]
+        if sets_out:
+            views["drawing_sets"] = sets_out
         end_phase("drawings")
 
         with open(str(output_path), "w") as f:
