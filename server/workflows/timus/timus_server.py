@@ -965,6 +965,7 @@ def list_part_drawings(
             "sheet": (doc.get("sheet") or {}).get("size"),
             "views": [v.get("label") for v in doc.get("views", [])],
             "dimensions": len(doc.get("dimensions", [])),
+            "set": (doc.get("set") or {}).get("name"),
             "error": doc.get("error"),
         })
     return {"drawings": listed}
@@ -1005,6 +1006,61 @@ def get_part_drawing_pdf(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={"Content-Disposition": f"inline; filename=\"{drawing}.pdf\""},
+    )
+
+
+@app.get("/projects/{name}/drawing-sets")
+def list_drawing_sets(
+    name: str,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    """Drawing sets declared in design.py (tertius.drawing.DrawingSet): ordered
+    sheet names, in the latest drafting build."""
+    views = _load_current_timus_views(name, ctx, db)
+    if isinstance(views, Response):
+        return views
+    return {"sets": list(views.get("drawing_sets", []) or [])}
+
+
+@app.get("/projects/{name}/drawing-sets/{drawing_set}.pdf")
+def get_drawing_set_pdf(
+    name: str,
+    drawing_set: str,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    """A drawing set as one multi-page PDF, one sheet per page in set order.
+    A sheet that could not be laid out fails the whole set with its message."""
+    views = _load_current_timus_views(name, ctx, db)
+    if isinstance(views, Response):
+        return views
+    sets = views.get("drawing_sets", []) or []
+    entry = next((ds for ds in sets if ds.get("name") == drawing_set), None)
+    if entry is None:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"error": f"drawing set {drawing_set!r} not found",
+                     "sets": [ds.get("name") for ds in sets]},
+        )
+    docs = []
+    for sheet_name in entry.get("sheets", []):
+        doc = _find_part_drawing(views, sheet_name)
+        if isinstance(doc, Response):
+            return doc
+        docs.append(doc)
+    if not docs:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={"error": f"drawing set {drawing_set!r} has no sheets", "drawing_set": drawing_set},
+        )
+    from workflows.timus.part_drawing_pdf import render_drawing_set_pdf
+
+    pdf_bytes = render_drawing_set_pdf(docs, title=str(entry.get("title") or drawing_set))
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"inline; filename=\"{drawing_set}.pdf\""},
     )
 
 

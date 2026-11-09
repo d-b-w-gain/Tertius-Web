@@ -53,6 +53,28 @@ front.horizontal((0, 0, 0), (50, 0, 0), offset=-10)
 * A drawing must be declared at the top level of the design run (not inside a
   cached `@part` builder), so it is registered on every compile.
 
+## Drawing sets
+
+Several sheets issued together (a plan split over two sheets plus a schedule,
+say) are a **drawing set**: one multi-page PDF, each title block reading
+SHEET n OF m.
+
+```python
+from tertius.drawing import Drawing, DrawingSet
+
+pack = DrawingSet("Drain_Holes", title="Drain auger holes", number="WGB-D-01")
+back = Drawing("Drain_Holes_1_Back", plan_back, sheet="A3", scale=1/75, drawing_set=pack)
+drive = Drawing("Drain_Holes_2_Driveway", plan_drive, sheet="A3", scale=1/75)
+pack.add(drive)                                # same as drawing_set=pack
+```
+
+* Sheet order is the order the drawings join the set. A drawing belongs to at
+  most one set; set names are unique per compile, like drawing names.
+* Every sheet is still an ordinary drawing (its own JSON and PDF endpoints).
+  The set only adds the numbering and the combined PDF. An explicit
+  `fields={"sheet_no": ...}` on a drawing wins over the automatic number.
+* Sheets in a set may use different sizes; each page keeps its own.
+
 ## Building and fetching
 
 The drawings are projected in the ordinary drafting build (`timus_views`),
@@ -66,20 +88,28 @@ beside the four fixed drafting views, and stored in the same artifact under
 | `GET /projects/{name}/drawings` | `{drawings: [{name, title, number, sheet, views, dimensions, error}]}` |
 | `GET /projects/{name}/drawings/{drawing}.json` | the resolved drawing: views, entities, every dimension's value and text |
 | `GET /projects/{name}/drawings/{drawing}.pdf` | the sheet as a PDF |
+| `GET /projects/{name}/drawing-sets` | `{sets: [{name, title, number, sheets}]}` |
+| `GET /projects/{name}/drawing-sets/{set}.pdf` | the whole set as one PDF, one sheet per page in order |
 
-All three return 409 when the build is older than `design.py`. A drawing that
+All of these return 409 when the build is older than `design.py`. A drawing that
 cannot be laid out (for example a diameter on a circle seen edge-on) is kept
 with its `error`; its PDF/JSON return 422 with the message, and the rest of the
-build is unaffected.
+build is unaffected. A set containing such a sheet returns that sheet's 422 for
+its PDF. The build stores the sets under `drawing_sets` beside `drawings`, and
+each sheet's document carries its `set` (`name`, `title`, `number`, `index`,
+`count`).
 
 ## Where the code is
 
-* `tertius/drawing.py`: author API and `project_drawing()` (exact HLR per
-  view on the drawing's own part, placement, dimension resolution).
+* `tertius/drawing.py`: author API (`Drawing`, `DrawingSet`) and
+  `project_drawing()` (exact HLR per view on the drawing's own part,
+  placement, dimension resolution, set numbering).
 * `server/core/compile_sandbox.py` (`timus_views`): projects declared drawings.
 * `server/workflows/timus/part_drawing_pdf.py`: PDF rendering (ISO 5457
-  border and zones, ISO 129 style dimensions, projection symbol, title block).
-* `server/workflows/timus/timus_server.py`: the `drawings` endpoints.
+  border and zones, ISO 129 style dimensions, projection symbol, title block);
+  `render_drawing_set_pdf()` for multi-page sets.
+* `server/workflows/timus/timus_server.py`: the `drawings` and `drawing-sets`
+  endpoints.
 * `server/tests/test_part_drawings.py`.
 
 ## Not yet

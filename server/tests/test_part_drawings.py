@@ -12,9 +12,9 @@ from sqlalchemy import select
 
 from core.compile_sandbox import run_compile_sandbox
 from core.models import Artifact, ProjectFile
-from tertius.drawing import Drawing, DrawingError, project_drawing
+from tertius.drawing import Drawing, DrawingError, DrawingSet, project_drawing
 from tertius.session import TertiusRuntimeError, compile_session
-from workflows.timus.part_drawing_pdf import render_part_drawing_pdf
+from workflows.timus.part_drawing_pdf import render_drawing_set_pdf, render_part_drawing_pdf
 
 HOLES = (22.5, 51.75, 128.25, 157.5)
 LENGTH, LEG, THICK, HOLE_Z, TAP = 180.0, 50.0, 2.0, 19.25, 4.2
@@ -341,3 +341,128 @@ def test_angle_out_of_the_view_plane_is_refused():
 def test_ordinate_and_angle_render():
     pdf = render_part_drawing_pdf(_plate_drawing())
     assert pdf.startswith(b"%PDF-")
+
+
+# ------------------------------------------------------------------ drawing sets
+SET_DESIGN = ANGLE_DESIGN + '''
+from tertius.drawing import DrawingSet
+pack = DrawingSet("Angle_Pack", title="Mount angle set", number="NGZ-SET-1")
+pack.add(drw)
+detail = Drawing("Angle_Detail", model, sheet="A4", drawing_set=pack)
+detail.view("front", at=(140, 120))
+'''
+
+
+def _set_docs() -> tuple[list[dict], dict, dict]:
+    """Two sheets in a set (A3 + A4) and one standalone drawing, one session."""
+    part = _angle()
+    with compile_session():
+        pack = DrawingSet("Angle_Pack", title="Mount angle set")
+        first = Drawing("Sheet_A3", part, drawing_set=pack)
+        first.view("front", at=(140, 175))
+        second = Drawing("Sheet_A4", part, sheet="A4")
+        second.view("front", at=(140, 120))
+        pack.add(second)
+        alone = Drawing("Alone", part)
+        alone.view("front", at=(140, 175))
+        return [project_drawing(first), project_drawing(second)], project_drawing(alone), pack.describe()
+
+
+def test_drawing_set_numbers_its_sheets_in_order():
+    (first, second), alone, described = _set_docs()
+    assert described == {"name": "Angle_Pack", "title": "Mount angle set", "number": "Angle_Pack",
+                         "sheets": ["Sheet_A3", "Sheet_A4"]}
+    assert first["set"] == {"name": "Angle_Pack", "title": "Mount angle set", "number": "Angle_Pack",
+                            "index": 1, "count": 2}
+    assert first["fields"]["sheet_no"] == "1 OF 2"
+    assert second["fields"]["sheet_no"] == "2 OF 2"
+    assert alone["set"] is None
+    assert "sheet_no" not in alone["fields"]  # standalone sheets keep "1 OF 1"
+
+
+def test_drawing_belongs_to_one_set_and_set_names_are_unique():
+    part = _angle()
+    with compile_session():
+        a = DrawingSet("A")
+        b = DrawingSet("B")
+        drw = Drawing("Only_Once", part, drawing_set=a)
+        with pytest.raises(DrawingError, match="already in set"):
+            b.add(drw)
+        with pytest.raises(TertiusRuntimeError, match="already used"):
+            DrawingSet("A")
+
+
+def test_renders_a_set_as_one_pdf_with_a_page_per_sheet():
+    docs, _, _ = _set_docs()
+    pdf = render_drawing_set_pdf(docs, title="Mount angle set")
+    assert pdf.startswith(b"%PDF-")
+    assert len(re.findall(rb"/Type\s*/Page[^s]", pdf)) == 2
+    boxes = [(float(w), float(h)) for w, h in
+             re.findall(rb"/MediaBox\s*\[\s*0\s+0\s+([\d.]+)\s+([\d.]+)", pdf)]
+    sizes = {(round(w / 72 * 25.4), round(h / 72 * 25.4)) for w, h in boxes}
+    assert {(420, 297), (297, 210)} <= sizes  # A3 and A4, each in landscape
+
+
+def test_sandbox_records_drawing_sets():
+    from core.compile_runtime import hydrate_project_files
+
+    with hydrate_project_files({"design.py": SET_DESIGN}) as project_dir:
+        result = run_compile_sandbox(project_dir, "timus_views", timeout_seconds=120)
+        assert result.success, result.stderr
+        views = json.loads(result.output_path.read_text())
+    assert views["drawing_sets"] == [{"name": "Angle_Pack", "title": "Mount angle set",
+                                      "number": "NGZ-SET-1", "sheets": ["Mount_Angle", "Angle_Detail"]}]
+    by_name = {d["name"]: d for d in views["drawings"]}
+    assert by_name["Mount_Angle"]["fields"]["sheet_no"] == "1 OF 2"
+    assert by_name["Angle_Detail"]["fields"]["sheet_no"] == "2 OF 2"
+
+
+def test_drawing_set_endpoints(authenticated_timus_client, db_session, seeded_tenant):
+    docs, _, described = _set_docs()
+    broken = {"schema": "tertius.part-drawing.v1", "name": "Broken", "error": "DrawingError: nope"}
+    _set_design(db_session, seeded_tenant, ANGLE_DESIGN)
+    _persist(db_session, seeded_tenant, {
+        "top": [], "front": [], "side": [], "iso": [],
+        "drawings": docs + [broken],
+        "drawing_sets": [described, {"name": "Has_Broken", "sheets": ["Sheet_A3", "Broken"]}],
+    })
+
+    listed = authenticated_timus_client.get("/projects/default_purlin/drawing-sets")
+    assert listed.status_code == 200
+    assert [s["name"] for s in listed.json()["sets"]] == ["Angle_Pack", "Has_Broken"]
+    drawings = {d["name"]: d for d in authenticated_timus_client.get("/projects/default_purlin/drawings").json()["drawings"]}
+    assert drawings["Sheet_A3"]["set"] == "Angle_Pack"
+
+    pdf = authenticated_timus_client.get("/projects/default_purlin/drawing-sets/Angle_Pack.pdf")
+    assert pdf.status_code == 200
+    assert pdf.headers["content-type"] == "application/pdf"
+    assert len(re.findall(rb"/Type\s*/Page[^s]", pdf.content)) == 2
+
+    missing = authenticated_timus_client.get("/projects/default_purlin/drawing-sets/Nope.pdf")
+    assert missing.status_code == 404
+    assert missing.json()["sets"] == ["Angle_Pack", "Has_Broken"]
+
+    failed = authenticated_timus_client.get("/projects/default_purlin/drawing-sets/Has_Broken.pdf")
+    assert failed.status_code == 422
+    assert failed.json()["error"] == "DrawingError: nope"
+
+
+def test_drawing_sets_need_a_current_build(authenticated_timus_client, db_session, seeded_tenant):
+    from datetime import timedelta
+
+    docs, _, described = _set_docs()
+    _persist(db_session, seeded_tenant, {"drawings": docs, "drawing_sets": [described]})
+    built_at = db_session.scalar(select(Artifact.created_at).where(Artifact.kind == "timus_views"))
+    design = db_session.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded_tenant.tenant_id,
+            ProjectFile.project_id == seeded_tenant.project_id,
+            ProjectFile.filename == "design.py",
+        )
+    )
+    design.content = ANGLE_DESIGN + "\n# edited after the build\n"
+    design.updated_at = built_at + timedelta(seconds=1)
+    db_session.commit()
+    for path in ("drawing-sets", "drawing-sets/Angle_Pack.pdf"):
+        response = authenticated_timus_client.get(f"/projects/default_purlin/{path}")
+        assert response.status_code == 409, path
